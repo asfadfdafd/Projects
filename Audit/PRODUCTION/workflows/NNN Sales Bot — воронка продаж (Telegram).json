@@ -1,0 +1,919 @@
+{
+  "name": "NNN Sales Bot — воронка продаж (Telegram)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message", "callback_query"],
+        "additionalFields": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000001",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [-2640, 200],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000001",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Слушает сообщения И нажатия инлайн-кнопок (callback_query). Тот же бот, что в NNN Telegram Bot."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Единый формат входа {channel, chat_id, text, callback_data} — задел под Instagram-адаптер (Фаза 2).\nconst u = $json;\nconst msg = u.message || (u.callback_query ? u.callback_query.message : null);\nif (!msg) return [];\nconst chat = msg.chat;\nreturn [{ json: { channel: 'telegram', chat_id: String(chat.id), first_name: chat.first_name || chat.title || '', text: (u.message && u.message.text ? u.message.text : '').trim(), callback_data: u.callback_query ? (u.callback_query.data || '') : '' } }];"
+      },
+      "id": "b2000001-0000-4000-8000-000000000002",
+      "name": "🧩 Нормализовать вход",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2416, 200],
+      "notes": "Instagram-адаптер (Фаза 2) будет выдавать тот же формат и подключаться к узлу «🔎 Лид + состояние»."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS (\n  INSERT INTO nnn_leads (source, channel, channel_id, full_name, status, state)\n  SELECT 'telegram', 'telegram', $1, $2, 'new', 'greeting'\n  WHERE NOT EXISTS (SELECT 1 FROM nnn_leads WHERE channel = 'telegram' AND channel_id = $1)\n  RETURNING id, state\n)\nSELECT id, state FROM ins\nUNION ALL\nSELECT id, state FROM nnn_leads WHERE channel = 'telegram' AND channel_id = $1 AND NOT EXISTS (SELECT 1 FROM ins)\nORDER BY id DESC\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.chat_id, $json.first_name ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000003",
+      "name": "🔎 Лид + состояние",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-2192, 200],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Находит лида по chat_id или создаёт нового (state=greeting). Бот без памяти — всё состояние в БД."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO nnn_messages (chat_id, direction, text, channel, lead_id) VALUES ($1, 'in', $2, 'telegram', $3) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('🧩 Нормализовать вход').item.json.chat_id, $('🧩 Нормализовать вход').item.json.text || $('🧩 Нормализовать вход').item.json.callback_data, $json.id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000004",
+      "name": "💾 Лог входящего",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1968, 200],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "История переписки — контекст для FAQ и аналитика воронки."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ядро state machine: текущее состояние + входящее сообщение → маршрут.\nconst norm = $('🧩 Нормализовать вход').first().json;\nconst lead = $('🔎 Лид + состояние').first().json;\nconst text = (norm.text || '').toLowerCase();\nconst cb = norm.callback_data;\nconst orderIntent = (/(хочу|нужен|нужна|закаж|заказать|оформ)/.test(text) && /(аудит|заказ)/.test(text)) || text === '/order' || text === '/start_order';\nconst yes = /^(да|согласен|согласна|подтверждаю|ок|ok)\\b/.test(text);\nlet route = 'faq';\nif (cb === 'start_order') route = 'start_questionnaire';\nelse if (cb === 'accept_proposal') route = 'contract';\nelse if (cb === 'decline_proposal') route = 'negotiate';\nelse if (lead.state === 'awaiting_questionnaire' && text) route = 'questionnaire_step';\nelse if (orderIntent) route = 'start_questionnaire';\nelse if (lead.state === 'proposal_sent' && yes) route = 'contract';\nreturn [{ json: { route, lead_id: lead.id, state: lead.state, chat_id: norm.chat_id, text: norm.text, first_name: norm.first_name } }];"
+      },
+      "id": "b2000001-0000-4000-8000-000000000005",
+      "name": "🚦 Роутер состояний",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1744, 200],
+      "notes": "greeting/faq → FAQ; «хочу заказать» или кнопка → анкета; awaiting_questionnaire → шаг анкеты; согласие на КП → договор."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+                "conditions": [
+                  { "id": "r-faq", "leftValue": "={{ $json.route }}", "rightValue": "faq", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "faq"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+                "conditions": [
+                  { "id": "r-startq", "leftValue": "={{ $json.route }}", "rightValue": "start_questionnaire", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "start_questionnaire"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+                "conditions": [
+                  { "id": "r-qstep", "leftValue": "={{ $json.route }}", "rightValue": "questionnaire_step", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "questionnaire_step"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+                "conditions": [
+                  { "id": "r-contract", "leftValue": "={{ $json.route }}", "rightValue": "contract", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "contract"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+                "conditions": [
+                  { "id": "r-negotiate", "leftValue": "={{ $json.route }}", "rightValue": "negotiate", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "negotiate"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000006",
+      "name": "🔀 Маршрут",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-1520, 200],
+      "notes": "5 веток: FAQ, старт анкеты, шаг анкеты, договор, переговоры."
+    },
+
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_ru || ' — ' || COALESCE(description, '') || ' Базовая цена: от ' || base_price::bigint || ' ₸.' AS fact FROM nnn_services WHERE is_active UNION ALL SELECT topic || ': ' || content FROM nnn_faq_kb WHERE is_active",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000007",
+      "name": "📚 База знаний",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1248, -240],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Услуги + факты FAQ из БД. Бот отвечает ТОЛЬКО на их основе, не выдумывает."
+    },
+    {
+      "parameters": {
+        "jsCode": "const facts = $input.all().map(i => i.json.fact).filter(Boolean).join('\\n- ');\nconst r = $('🚦 Роутер состояний').first().json;\nconst system = 'Ты — вежливый консультант аудиторской компании. Отвечай кратко (2-6 предложений), по-русски, без markdown. Отвечай СТРОГО на основе базы знаний ниже; если ответа там нет — скажи, что уточнишь у специалиста, и предложи оставить вопрос. Точную цену не называй — объясни, от чего зависит, и предложи пройти короткую анкету. В конце мягко предложи заказать аудит (кнопка под сообщением).\\n\\nБАЗА ЗНАНИЙ:\\n- ' + facts;\nconst user = r.text || 'Здравствуйте';\nreturn [{ json: { chat_id: r.chat_id, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', temperature: 0.3, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) } }];"
+      },
+      "id": "b2000001-0000-4000-8000-000000000008",
+      "name": "🧠 Запрос FAQ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1024, -240],
+      "notes": "FAQ-консультант: вопросы о ценах, видах аудита, лицензиях."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000009",
+      "name": "🤖 Call Groq AI (FAQ)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-800, -240],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "J1eRU7UjeN3Iryr0",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Тот же Groq креденшл, что в NNN Analysis Engine."
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('🧠 Запрос FAQ').first().json;\nlet answer = $json.choices?.[0]?.message?.content || '';\nanswer = String(answer).replace(/```/g, '').trim();\nif (!answer) answer = 'Извините, не получилось ответить автоматически 🙈 Специалист свяжется с вами. А пока можете заказать аудит кнопкой ниже.';\nreturn [{ json: { chat_id: meta.chat_id, answer } }];"
+      },
+      "id": "b2000001-0000-4000-8000-00000000000a",
+      "name": "📦 Ответ FAQ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-576, -240],
+      "notes": "Парсинг ответа Groq с фолбэком."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.answer }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📝 Заказать аудит",
+                    "additionalFields": {
+                      "callback_data": "start_order"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000000b",
+      "name": "💬 Ответ клиенту (FAQ)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-352, -240],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-00000000000b",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Ответ FAQ + кнопка «Заказать аудит» (callback start_order)."
+    },
+
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH q AS (\n  INSERT INTO nnn_questionnaire_responses (lead_id)\n  SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM nnn_questionnaire_responses WHERE lead_id = $1 AND NOT completed)\n  RETURNING id\n)\nUPDATE nnn_leads SET state = 'awaiting_questionnaire', updated_at = NOW() WHERE id = $1 RETURNING id, state;",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000000c",
+      "name": "📝 Старт анкеты",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1248, 32],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Создаёт незаполненную анкету (если нет) и переводит лида в awaiting_questionnaire."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🚦 Роутер состояний').item.json.chat_id }}",
+        "text": "Отлично! 📋 Задам 12 коротких вопросов — по ним рассчитаю точную стоимость и пришлю коммерческое предложение.\n\nВопрос 1/12. Название вашей компании?",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000000d",
+      "name": "💬 Первый вопрос",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-1024, 32],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-00000000000d",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Текст вопроса 1 должен совпадать с QUESTIONS[0] в узле «✍️ Записать ответ»."
+    },
+
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, answers, current_step FROM nnn_questionnaire_responses WHERE lead_id = $1 AND NOT completed ORDER BY id DESC LIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000000e",
+      "name": "📥 Текущая анкета",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1248, 304],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Достаёт незавершённую анкету лида (ответы + номер текущего вопроса)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Анкета по шагам. ID полей — из Sample_Audit_Questionnaire.md (их читает движок цены).\nconst QUESTIONS = [\n  { id: 'company_name', text: 'Вопрос 1/12. Название вашей компании?', type: 'text' },\n  { id: 'contact_name', text: 'Вопрос 2/12. Контактное лицо (ФИО, должность)?', type: 'text' },\n  { id: 'email', text: 'Вопрос 3/12. Email для связи?', type: 'text' },\n  { id: 'phone', text: 'Вопрос 4/12. Телефон?', type: 'text' },\n  { id: 'audit_type', text: 'Вопрос 5/12. Какой аудит нужен? Ответьте цифрой:\\n1 — Обязательный\\n2 — Инициативный\\n3 — Аудит недропользователя\\n4 — Налоговый\\n5 — Due diligence', type: 'choice', options: { '1': 'statutory', '2': 'voluntary', '3': 'subsoil', '4': 'tax', '5': 'due_diligence' } },\n  { id: 'standard', text: 'Вопрос 6/12. Стандарт отчётности? Ответьте цифрой:\\n1 — НСФО\\n2 — МСФО', type: 'choice', options: { '1': 'nsfo', '2': 'ifrs' } },\n  { id: 'years', text: 'Вопрос 7/12. Сколько лет (периодов) нужно проверить? Напишите число, например 1.', type: 'number' },\n  { id: 'deadline_days', text: 'Вопрос 8/12. За сколько дней нужен результат? Напишите число, например 60 (менее 30 — срочный тариф).', type: 'number' },\n  { id: 'revenue_band', text: 'Вопрос 9/12. Годовая выручка? Ответьте цифрой:\\n1 — до ₸100 млн\\n2 — ₸100 млн – 1 млрд\\n3 — ₸1–10 млрд\\n4 — свыше ₸10 млрд', type: 'choice', options: { '1': 'lt_100m', '2': '100m_1b', '3': '1b_10b', '4': 'gt_10b' } },\n  { id: 'employees', text: 'Вопрос 10/12. Численность сотрудников? Ответьте цифрой:\\n1 — до 50\\n2 — 50–250\\n3 — более 250', type: 'choice', options: { '1': 'lt_50', '2': '50_250', '3': 'gt_250' } },\n  { id: 'entities', text: 'Вопрос 11/12. Сколько юридических лиц нужно проверить (консолидация)? Напишите число, например 1.', type: 'number' },\n  { id: 'notes', text: 'Вопрос 12/12. Что ещё нам важно знать? (или напишите «нет»)', type: 'text' }\n];\nconst row = $json;\nconst r = $('🚦 Роутер состояний').first().json;\nconst step = row.current_step ?? 0;\nconst q = QUESTIONS[step];\nconst answers = typeof row.answers === 'string' ? JSON.parse(row.answers) : (row.answers || {});\nconst text = (r.text || '').trim();\nlet valid = true;\nlet value = text;\nif (q.type === 'choice') { const key = text.replace(/[^0-9]/g, ''); value = q.options[key]; if (!value) valid = false; }\nelse if (q.type === 'number') { const n = parseInt(text.replace(/[^0-9]/g, ''), 10); if (isNaN(n)) valid = false; else value = n; }\nif (!valid) {\n  return [{ json: { response_id: row.id, chat_id: r.chat_id, lead_id: r.lead_id, answers: JSON.stringify(answers), current_step: step, completed: false, done: false, message: 'Не понял ответ 🙈 Попробуйте ещё раз.\\n\\n' + q.text } }];\n}\nanswers[q.id] = value;\nif (q.id === 'audit_type') answers['is_subsoil'] = value === 'subsoil';\nconst next = step + 1;\nconst done = next >= QUESTIONS.length;\nreturn [{ json: { response_id: row.id, chat_id: r.chat_id, lead_id: r.lead_id, answers: JSON.stringify(answers), current_step: next, completed: done, done, message: done ? 'Спасибо! Анкета заполнена ✅ Считаю стоимость — это займёт меньше минуты…' : QUESTIONS[next].text } }];"
+      },
+      "id": "b2000001-0000-4000-8000-00000000000f",
+      "name": "✍️ Записать ответ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1024, 304],
+      "notes": "Валидация ответа (цифра/число), запись в answers, следующий вопрос или завершение."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_questionnaire_responses SET answers = $2::jsonb, current_step = $3, completed = $4, updated_at = NOW() WHERE id = $1 RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.response_id, $json.answers, $json.current_step, $json.completed ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000010",
+      "name": "💾 Обновить анкету",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-800, 304],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Сохраняем прогресс анкеты после каждого ответа."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('✍️ Записать ответ').item.json.chat_id }}",
+        "text": "={{ $('✍️ Записать ответ').item.json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000011",
+      "name": "💬 Следующий вопрос / статус",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-576, 304],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000011",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Следующий вопрос, повтор при невалидном ответе или «считаю стоимость…»."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "q-done",
+              "leftValue": "={{ $('✍️ Записать ответ').item.json.done }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000012",
+      "name": "❓ Анкета завершена?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-352, 304],
+      "notes": "TRUE → расчёт цены и КП. FALSE → ждём следующий ответ."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_leads SET state = 'pricing', company_name = $2, contact_name = $3, email = $4, phone = $5, updated_at = NOW() WHERE id = $1 RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('✍️ Записать ответ').item.json.lead_id, JSON.parse($('✍️ Записать ответ').item.json.answers).company_name || '', JSON.parse($('✍️ Записать ответ').item.json.answers).contact_name || '', JSON.parse($('✍️ Записать ответ').item.json.answers).email || '', JSON.parse($('✍️ Записать ответ').item.json.answers).phone || '' ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000013",
+      "name": "🔁 Состояние: pricing + контакты",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-128, 240],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Контакты из анкеты переносим в карточку лида."
+    },
+    {
+      "parameters": {
+        "jsCode": "const w = $('✍️ Записать ответ').first().json;\nreturn [{ json: { lead_id: w.lead_id, chat_id: w.chat_id, answers: JSON.parse(w.answers) } }];"
+      },
+      "id": "b2000001-0000-4000-8000-000000000014",
+      "name": "🧩 Вход для движка цены",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [96, 240],
+      "notes": "Готовим { lead_id, chat_id, answers } для под-воркфлоу."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "NNN Pricing Engine (под-воркфлоу)"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000015",
+      "name": "🧮 Движок цены (КП)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [320, 240],
+      "notes": "ПОСЛЕ ИМПОРТА выберите воркфлоу «NNN Pricing Engine (под-воркфлоу)» в поле Workflow."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO nnn_proposals (lead_id, service_code, price, currency, breakdown, proposal_text, needs_review, status) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, $json.service_code, $json.price, $json.currency, JSON.stringify($json.breakdown || {}), $json.proposal_text, $json.needs_review, $json.needs_review ? 'draft' : 'sent' ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000016",
+      "name": "💾 Сохранить КП",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [544, 240],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "КП в CRM: цена, breakdown расчёта, текст. needs_review → статус draft до одобрения аудитором."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "needs-review",
+              "leftValue": "={{ $('🧮 Движок цены (КП)').item.json.needs_review }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000017",
+      "name": "❓ Нужна ручная проверка?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [768, 240],
+      "notes": "Цена выше review_threshold → КП клиенту НЕ уходит, сначала одобрение аудитора."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🧮 Движок цены (КП)').item.json.chat_id }}",
+        "text": "Спасибо! Ваш запрос нестандартный, поэтому расчёт дополнительно проверит ведущий аудитор. 👨‍💼 Пришлю коммерческое предложение в течение рабочего дня.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000018",
+      "name": "💬 Цена на проверке",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [992, 112],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000018",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "team@example.com",
+        "subject": "=⚠️ КП требует одобрения — лид #{{ $('🧮 Движок цены (КП)').item.json.lead_id }}, {{ $('🧮 Движок цены (КП)').item.json.price_formatted }}",
+        "message": "=Цена превысила порог ручной проверки.\n\nЛид: #{{ $('🧮 Движок цены (КП)').item.json.lead_id }}\nУслуга: {{ $('🧮 Движок цены (КП)').item.json.service_label }}\nЦена: {{ $('🧮 Движок цены (КП)').item.json.price_formatted }}\n\nРасчёт: {{ JSON.stringify($('🧮 Движок цены (КП)').item.json.breakdown) }}\n\nТекст КП:\n{{ $('🧮 Движок цены (КП)').item.json.proposal_text }}",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000019",
+      "name": "📨 Алерт: одобрить КП",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1216, 112],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000019",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Поставьте реальный адрес команды в sendTo."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🧮 Движок цены (КП)').item.json.chat_id }}",
+        "text": "={{ $('🧮 Движок цены (КП)').item.json.proposal_text + '\\n\\n💰 Итоговая стоимость: ' + $('🧮 Движок цены (КП)').item.json.price_formatted }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ Согласен — оформить договор",
+                    "additionalFields": {
+                      "callback_data": "accept_proposal"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "💬 Есть вопросы / обсудить",
+                    "additionalFields": {
+                      "callback_data": "decline_proposal"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000001a",
+      "name": "📤 Отправить КП",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [992, 368],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-00000000001a",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "КП + кнопки «Согласен» / «Есть вопросы»."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_leads SET state = 'proposal_sent', status = 'contacted', updated_at = NOW() WHERE id = $1 RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('🧮 Движок цены (КП)').item.json.lead_id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000001b",
+      "name": "🔁 Состояние: proposal_sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1216, 368],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "team@example.com",
+        "subject": "=📤 КП отправлено — лид #{{ $('🧮 Движок цены (КП)').item.json.lead_id }}, {{ $('🧮 Движок цены (КП)').item.json.price_formatted }}",
+        "message": "=Клиенту отправлено КП.\n\nЛид: #{{ $('🧮 Движок цены (КП)').item.json.lead_id }}\nУслуга: {{ $('🧮 Движок цены (КП)').item.json.service_label }}\nЦена: {{ $('🧮 Движок цены (КП)').item.json.price_formatted }}",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-00000000001c",
+      "name": "📨 Алерт: КП отправлено",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1440, 368],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-00000000001c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Поставьте реальный адрес команды в sendTo."
+    },
+
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT l.id AS lead_id, l.company_name, l.contact_name, l.email, l.phone, p.id AS proposal_id, p.price, p.currency, p.service_code, q.answers FROM nnn_leads l JOIN nnn_proposals p ON p.lead_id = l.id LEFT JOIN nnn_questionnaire_responses q ON q.lead_id = l.id AND q.completed WHERE l.id = $1 ORDER BY p.created_at DESC, q.updated_at DESC LIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000001d",
+      "name": "📥 Данные для договора",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1248, 576],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Лид + последнее КП + анкета — всё для заполнения шаблона договора."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Заполняем шаблон договора (Sample_Contract_Template.md). MVP: текстовый файл.\n// СЛЕДУЮЩИЙ ШАГ: PDF-генерация + ссылка э-подписи (DocuSign/SignNow) — после выбора провайдера.\nconst d = $json;\nconst a = typeof d.answers === 'string' ? JSON.parse(d.answers || '{}') : (d.answers || {});\nconst labels = { statutory: 'обязательный аудит', voluntary: 'инициативный аудит', subsoil: 'аудит недропользователя', tax: 'налоговый аудит', due_diligence: 'due diligence / спецзадание' };\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('ru-RU');\nconst contractNumber = 'AUD-' + now.getFullYear() + '-' + String(d.lead_id).padStart(4, '0');\nconst price = Number(d.price);\nconst priceFmt = Math.round(price).toLocaleString('ru-RU') + ' ₸';\nconst years = a.years || 1;\nconst standard = a.standard === 'ifrs' ? 'МСФО (IFRS)' : 'НСФО';\nconst text = 'ДОГОВОР НА ОКАЗАНИЕ АУДИТОРСКИХ УСЛУГ № ' + contractNumber + '\\n\\nг. [ГОРОД — ПЛЕЙСХОЛДЕР] — ' + dateStr + '\\n\\n[НАИМЕНОВАНИЕ АУДИТОРСКОЙ КОМПАНИИ — ПЛЕЙСХОЛДЕР], именуемое далее «Аудитор», в лице [ПРЕДСТАВИТЕЛЬ — ПЛЕЙСХОЛДЕР], с одной стороны, и ' + (d.company_name || a.company_name || '[КОМПАНИЯ КЛИЕНТА]') + ', именуемое далее «Клиент», в лице ' + (d.contact_name || a.contact_name || '[ПРЕДСТАВИТЕЛЬ КЛИЕНТА]') + ', с другой стороны, заключили настоящий Договор о нижеследующем.\\n\\n1. ПРЕДМЕТ ДОГОВОРА\\n1.1. Аудитор обязуется провести ' + (labels[d.service_code] || d.service_code) + ' финансовой отчётности Клиента за период: ' + years + ' год(а), подготовленной по стандарту ' + standard + ', и выдать аудиторское заключение.\\n\\n2. ЦЕНА И ПОРЯДОК ОПЛАТЫ\\n2.1. Общая стоимость услуг составляет ' + priceFmt + '.\\n2.2. Порядок оплаты: 50% аванс, 50% по факту передачи заключения (уточняется сторонами).\\n2.3. Цена основана на данных анкеты Клиента. Существенное изменение объёма работ оформляется доп. соглашением.\\n\\n3. СРОКИ\\n3.1. Работы начинаются в течение 5 рабочих дней после оплаты аванса и подписания Договора.\\n3.2. Ориентировочный срок выдачи заключения: ' + (a.deadline_days || '[СРОК]') + ' дней.\\n\\n4. ОБЯЗАННОСТИ СТОРОН\\n4.1. Клиент своевременно предоставляет учётные записи, первичные документы и доступ к персоналу.\\n4.2. Аудитор выполняет работу в соответствии с применимыми стандартами аудита и сохраняет конфиденциальность.\\n\\n5. КОНФИДЕНЦИАЛЬНОСТЬ\\n5.1. Стороны сохраняют конфиденциальность всей информации, полученной в рамках Договора.\\n\\n6. ОТВЕТСТВЕННОСТЬ\\n6.1. Стороны несут ответственность согласно законодательству Республики Казахстан.\\n\\n7. ЗАКЛЮЧИТЕЛЬНЫЕ ПОЛОЖЕНИЯ\\n7.1. Договор вступает в силу с момента подписания (в том числе электронного) и действует до полного исполнения обязательств.\\n\\nПОДПИСИ СТОРОН\\nАудитор: [НАИМЕНОВАНИЕ — ПЛЕЙСХОЛДЕР] ____________\\nКлиент: ' + (d.company_name || a.company_name || '[КОМПАНИЯ]') + ' ____________\\nДата: ' + dateStr + '\\n\\n---\\nДокумент сформирован автоматически и подлежит проверке юристом. Электронная подпись: [ССЫЛКА Э-ПОДПИСИ — ПЛЕЙСХОЛДЕР до выбора провайдера].';\nreturn [{ json: { lead_id: d.lead_id, proposal_id: d.proposal_id, chat_id: $('🚦 Роутер состояний').first().json.chat_id, contract_number: contractNumber, price_formatted: priceFmt, company_name: d.company_name || a.company_name || '' }, binary: { contract: { data: Buffer.from(text, 'utf8').toString('base64'), mimeType: 'text/plain', fileName: 'Dogovor_' + contractNumber + '.txt' } } }];"
+      },
+      "id": "b2000001-0000-4000-8000-00000000001e",
+      "name": "📄 Сгенерировать договор",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1024, 576],
+      "notes": "MVP: .txt из шаблона. После выбора провайдера э-подписи здесь появятся PDF + sign_url."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH c AS (\n  INSERT INTO nnn_contracts (lead_id, proposal_id, contract_number, status) VALUES ($1, $2, $3, 'sent') RETURNING id\n), p AS (\n  UPDATE nnn_proposals SET status = 'accepted', updated_at = NOW() WHERE id = $2 RETURNING id\n)\nUPDATE nnn_leads SET state = 'contract_sent', updated_at = NOW() WHERE id = $1 RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('📄 Сгенерировать договор').item.json.lead_id, $('📄 Сгенерировать договор').item.json.proposal_id, $('📄 Сгенерировать договор').item.json.contract_number ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-00000000001f",
+      "name": "💾 Сохранить договор + статусы",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-800, 576],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Договор в CRM, КП → accepted, лид → contract_sent."
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "={{ $('📄 Сгенерировать договор').item.json.chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "contract",
+        "additionalFields": {
+          "caption": "={{ '📄 Договор № ' + $('📄 Сгенерировать договор').item.json.contract_number + ' на сумму ' + $('📄 Сгенерировать договор').item.json.price_formatted + '.\\n\\nСсылка для электронной подписи придёт следующим сообщением. [ПЛЕЙСХОЛДЕР: интеграция э-подписи — после выбора провайдера]\\n\\nЕсли есть вопросы по договору — просто напишите сюда.' }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000020",
+      "name": "📤 Отправить договор",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-576, 576],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000020",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Шлём договор файлом сразу после генерации (binary), затем фиксируем в CRM."
+    },
+    {
+      "parameters": {
+        "sendTo": "team@example.com",
+        "subject": "=🎉 Договор отправлен — {{ $('📄 Сгенерировать договор').item.json.contract_number }} ({{ $('📄 Сгенерировать договор').item.json.company_name }})",
+        "message": "=Клиент согласился с КП, договор отправлен в чат.\n\nЛид: #{{ $('📄 Сгенерировать договор').item.json.lead_id }}\nКомпания: {{ $('📄 Сгенерировать договор').item.json.company_name }}\nДоговор: {{ $('📄 Сгенерировать договор').item.json.contract_number }}\nСумма: {{ $('📄 Сгенерировать договор').item.json.price_formatted }}\n\nСледующий шаг: контроль подписания (вебхук провайдера э-подписи — Фаза 1+).",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000021",
+      "name": "📨 Алерт: договор отправлен",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-352, 576],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000021",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Поставьте реальный адрес команды в sendTo."
+    },
+
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_leads SET state = 'negotiating', updated_at = NOW() WHERE id = $1 RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id ] }}"
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000022",
+      "name": "🔁 Состояние: negotiating",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1248, 832],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🚦 Роутер состояний').item.json.chat_id }}",
+        "text": "Понимаю! 🤝 Передал ваш вопрос менеджеру — он свяжется с вами в ближайшее время, обсудит детали и при необходимости скорректирует предложение.\n\nА пока можете задать любой вопрос прямо здесь.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "b2000001-0000-4000-8000-000000000023",
+      "name": "💬 Подключаю менеджера",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-1024, 832],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000023",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "team@example.com",
+        "subject": "=🗣 Лид #{{ $('🚦 Роутер состояний').item.json.lead_id }} хочет обсудить КП — нужен менеджер",
+        "message": "=Клиент нажал «Есть вопросы / обсудить» по КП.\n\nЛид: #{{ $('🚦 Роутер состояний').item.json.lead_id }}\nChat ID (Telegram): {{ $('🚦 Роутер состояний').item.json.chat_id }}\nИмя: {{ $('🚦 Роутер состояний').item.json.first_name }}\n\nСвяжитесь с клиентом и продолжите переговоры.",
+        "options": {}
+      },
+      "id": "b2000001-0000-4000-8000-000000000024",
+      "name": "📨 Алерт: нужен менеджер",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-800, 832],
+      "webhookId": "b2000001-aaaa-4aaa-8aaa-000000000024",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Поставьте реальный адрес команды в sendTo."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "🧩 Нормализовать вход", "type": "main", "index": 0 }]]
+    },
+    "🧩 Нормализовать вход": {
+      "main": [[{ "node": "🔎 Лид + состояние", "type": "main", "index": 0 }]]
+    },
+    "🔎 Лид + состояние": {
+      "main": [[{ "node": "💾 Лог входящего", "type": "main", "index": 0 }]]
+    },
+    "💾 Лог входящего": {
+      "main": [[{ "node": "🚦 Роутер состояний", "type": "main", "index": 0 }]]
+    },
+    "🚦 Роутер состояний": {
+      "main": [[{ "node": "🔀 Маршрут", "type": "main", "index": 0 }]]
+    },
+    "🔀 Маршрут": {
+      "main": [
+        [{ "node": "📚 База знаний", "type": "main", "index": 0 }],
+        [{ "node": "📝 Старт анкеты", "type": "main", "index": 0 }],
+        [{ "node": "📥 Текущая анкета", "type": "main", "index": 0 }],
+        [{ "node": "📥 Данные для договора", "type": "main", "index": 0 }],
+        [{ "node": "🔁 Состояние: negotiating", "type": "main", "index": 0 }]
+      ]
+    },
+    "📚 База знаний": {
+      "main": [[{ "node": "🧠 Запрос FAQ", "type": "main", "index": 0 }]]
+    },
+    "🧠 Запрос FAQ": {
+      "main": [[{ "node": "🤖 Call Groq AI (FAQ)", "type": "main", "index": 0 }]]
+    },
+    "🤖 Call Groq AI (FAQ)": {
+      "main": [[{ "node": "📦 Ответ FAQ", "type": "main", "index": 0 }]]
+    },
+    "📦 Ответ FAQ": {
+      "main": [[{ "node": "💬 Ответ клиенту (FAQ)", "type": "main", "index": 0 }]]
+    },
+    "📝 Старт анкеты": {
+      "main": [[{ "node": "💬 Первый вопрос", "type": "main", "index": 0 }]]
+    },
+    "📥 Текущая анкета": {
+      "main": [[{ "node": "✍️ Записать ответ", "type": "main", "index": 0 }]]
+    },
+    "✍️ Записать ответ": {
+      "main": [[{ "node": "💾 Обновить анкету", "type": "main", "index": 0 }]]
+    },
+    "💾 Обновить анкету": {
+      "main": [[{ "node": "💬 Следующий вопрос / статус", "type": "main", "index": 0 }]]
+    },
+    "💬 Следующий вопрос / статус": {
+      "main": [[{ "node": "❓ Анкета завершена?", "type": "main", "index": 0 }]]
+    },
+    "❓ Анкета завершена?": {
+      "main": [
+        [{ "node": "🔁 Состояние: pricing + контакты", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "🔁 Состояние: pricing + контакты": {
+      "main": [[{ "node": "🧩 Вход для движка цены", "type": "main", "index": 0 }]]
+    },
+    "🧩 Вход для движка цены": {
+      "main": [[{ "node": "🧮 Движок цены (КП)", "type": "main", "index": 0 }]]
+    },
+    "🧮 Движок цены (КП)": {
+      "main": [[{ "node": "💾 Сохранить КП", "type": "main", "index": 0 }]]
+    },
+    "💾 Сохранить КП": {
+      "main": [[{ "node": "❓ Нужна ручная проверка?", "type": "main", "index": 0 }]]
+    },
+    "❓ Нужна ручная проверка?": {
+      "main": [
+        [{ "node": "💬 Цена на проверке", "type": "main", "index": 0 }],
+        [{ "node": "📤 Отправить КП", "type": "main", "index": 0 }]
+      ]
+    },
+    "💬 Цена на проверке": {
+      "main": [[{ "node": "📨 Алерт: одобрить КП", "type": "main", "index": 0 }]]
+    },
+    "📤 Отправить КП": {
+      "main": [[{ "node": "🔁 Состояние: proposal_sent", "type": "main", "index": 0 }]]
+    },
+    "🔁 Состояние: proposal_sent": {
+      "main": [[{ "node": "📨 Алерт: КП отправлено", "type": "main", "index": 0 }]]
+    },
+    "📥 Данные для договора": {
+      "main": [[{ "node": "📄 Сгенерировать договор", "type": "main", "index": 0 }]]
+    },
+    "📄 Сгенерировать договор": {
+      "main": [[{ "node": "📤 Отправить договор", "type": "main", "index": 0 }]]
+    },
+    "📤 Отправить договор": {
+      "main": [[{ "node": "💾 Сохранить договор + статусы", "type": "main", "index": 0 }]]
+    },
+    "💾 Сохранить договор + статусы": {
+      "main": [[{ "node": "📨 Алерт: договор отправлен", "type": "main", "index": 0 }]]
+    },
+    "🔁 Состояние: negotiating": {
+      "main": [[{ "node": "💬 Подключаю менеджера", "type": "main", "index": 0 }]]
+    },
+    "💬 Подключаю менеджера": {
+      "main": [[{ "node": "📨 Алерт: нужен менеджер", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "instanceId": "6576d0836e2330f8b97d875b06fa2116455e2e77c223e2b7f6c1cc7c39283f81"
+  },
+  "tags": []
+}

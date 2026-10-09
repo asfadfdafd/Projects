@@ -1,0 +1,196 @@
+{
+  "dataset": {
+    "n_total": 4000,
+    "n_train": 3200,
+    "n_test": 800,
+    "win_rate": 0.588
+  },
+  "test": [
+    {
+      "model": "logistic_regression",
+      "roc_auc": 0.8241,
+      "accuracy": 0.7375,
+      "precision": 0.7495,
+      "recall": 0.8207,
+      "f1": 0.7835,
+      "brier_score": 0.1671,
+      "log_loss": 0.4994,
+      "expected_calibration_error": 0.0368
+    },
+    {
+      "model": "gradient_boosting",
+      "roc_auc": 0.8185,
+      "accuracy": 0.735,
+      "precision": 0.7525,
+      "recall": 0.8078,
+      "f1": 0.7792,
+      "brier_score": 0.1714,
+      "log_loss": 0.5102,
+      "expected_calibration_error": 0.0425
+    }
+  ],
+  "share_model_test": {
+    "n": 463,
+    "mae": 0.1392,
+    "rmse": 0.187,
+    "r2": 0.2417,
+    "baseline_mae_if_always_mean": 0.1718
+  },
+  "train": [
+    {
+      "model": "logistic_regression (train)",
+      "roc_auc": 0.8463,
+      "accuracy": 0.7731,
+      "precision": 0.7866,
+      "recall": 0.8449,
+      "f1": 0.8147,
+      "brier_score": 0.1551,
+      "log_loss": 0.4724,
+      "expected_calibration_error": 0.0144
+    }
+  ],
+  "calibration_logistic_test": [
+    {
+      "bin": "0–10%",
+      "n": 57,
+      "predicted": 0.0522,
+      "actual": 0.0351
+    },
+    {
+      "bin": "10–20%",
+      "n": 52,
+      "predicted": 0.152,
+      "actual": 0.1346
+    },
+    {
+      "bin": "20–30%",
+      "n": 63,
+      "predicted": 0.2453,
+      "actual": 0.2381
+    },
+    {
+      "bin": "30–40%",
+      "n": 61,
+      "predicted": 0.3546,
+      "actual": 0.459
+    },
+    {
+      "bin": "40–50%",
+      "n": 60,
+      "predicted": 0.4524,
+      "actual": 0.5167
+    },
+    {
+      "bin": "50–60%",
+      "n": 77,
+      "predicted": 0.5491,
+      "actual": 0.4545
+    },
+    {
+      "bin": "60–70%",
+      "n": 94,
+      "predicted": 0.6497,
+      "actual": 0.6383
+    },
+    {
+      "bin": "70–80%",
+      "n": 102,
+      "predicted": 0.7512,
+      "actual": 0.7745
+    },
+    {
+      "bin": "80–90%",
+      "n": 104,
+      "predicted": 0.8516,
+      "actual": 0.7981
+    },
+    {
+      "bin": "90–100%",
+      "n": 130,
+      "predicted": 0.9417,
+      "actual": 0.9462
+    }
+  ],
+  "recovery_check": {
+    "corr_pred_vs_true_probability": 0.9747,
+    "mean_abs_error_vs_true_probability": 0.0506
+  },
+  "uncertainty_band_pp": 5.0,
+  "permutation_importance_top15": [
+    {
+      "feature": "limitation_period_ok",
+      "label": "Срок исковой давности не истёк",
+      "auc_drop": 0.0472
+    },
+    {
+      "feature": "doc_completeness",
+      "label": "Полнота пакета документов",
+      "auc_drop": 0.0269
+    },
+    {
+      "feature": "months_since_breach",
+      "label": "Давность обращения в суд",
+      "auc_drop": 0.0227
+    },
+    {
+      "feature": "contract_signed_both",
+      "label": "Договор подписан обеими сторонами",
+      "auc_drop": 0.0205
+    },
+    {
+      "feature": "respondent_admits_partially",
+      "label": "Ответчик частично признаёт требования",
+      "auc_drop": 0.0177
+    },
+    {
+      "feature": "respondent_appeared",
+      "label": "Ответчик участвует в процессе",
+      "auc_drop": 0.0168
+    },
+    {
+      "feature": "has_expert_opinion",
+      "label": "Есть заключение эксперта",
+      "auc_drop": 0.0144
+    },
+    {
+      "feature": "category=debt_contract",
+      "label": "Категория спора: Взыскание задолженности по договору",
+      "auc_drop": 0.0099
+    },
+    {
+      "feature": "witness_count",
+      "label": "Свидетели",
+      "auc_drop": 0.0076
+    },
+    {
+      "feature": "claimant_has_lawyer",
+      "label": "У истца есть представитель",
+      "auc_drop": 0.0062
+    },
+    {
+      "feature": "category=family_property",
+      "label": "Категория спора: Раздел имущества супругов",
+      "auc_drop": 0.0048
+    },
+    {
+      "feature": "has_payment_documents",
+      "label": "Есть платёжные документы",
+      "auc_drop": 0.0047
+    },
+    {
+      "feature": "has_written_contract",
+      "label": "Есть письменный договор",
+      "auc_drop": 0.0045
+    },
+    {
+      "feature": "has_correspondence",
+      "label": "Есть письменная переписка",
+      "auc_drop": 0.004
+    },
+    {
+      "feature": "counterclaim_filed",
+      "label": "Подан встречный иск",
+      "auc_drop": 0.0038
+    }
+  ]
+}

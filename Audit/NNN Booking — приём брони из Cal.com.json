@@ -1,0 +1,202 @@
+{
+  "name": "NNN Booking — приём брони из Cal.com",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Разбираем полезную нагрузку Cal.com (BOOKING_CREATED).\nconst root = $json.body || $json;\nconst b = root.payload || root;\nconst att = (b.attendees && b.attendees[0]) || {};\nconst meta = b.metadata || {};\n// тип услуги: берём чистое название события, а не строку 'X between A and B'\nconst service = (b.eventType && b.eventType.title) || b.eventTitle || b.type || 'NNN детальный аудит';\n// lead_id, прошитый в ссылку записи (metadata[lead_id])\nconst leadId = meta.lead_id || meta['lead_id'] || '';\nreturn [{ json: {\n  external_id: b.uid || b.id || '',\n  attendee_name: att.name || '',\n  attendee_email: att.email || '',\n  service,\n  lead_id: String(leadId || ''),\n  start_time: b.startTime || null,\n  end_time: b.endTime || null,\n  meeting_url: (b.metadata && (b.metadata.videoCallUrl || b.metadata.videoCallData)) || b.location || ''\n} }];"
+      },
+      "id": "2f9ddab2-b64a-4e4d-848b-fbd23c8f0556",
+      "name": "📦 Разобрать бронь",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "notes": "Достаём имя, email, услугу, время, ссылку на встречу."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO nnn_bookings (external_id, attendee_name, attendee_email, service, start_time, end_time, meeting_url, status) VALUES ($1,$2,$3,$4, NULLIF($5,'')::timestamptz, NULLIF($6,'')::timestamptz, $7, 'confirmed') ON CONFLICT (external_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ $json.external_id }}, {{ $json.attendee_name }}, {{ $json.attendee_email }}, {{ $json.service }}, {{ $json.start_time }}, {{ $json.end_time }}, {{ $json.meeting_url }}"
+        }
+      },
+      "id": "09726d0e-e4dc-4ab5-959b-50a1c5af51c9",
+      "name": "💾 Записать бронь",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Сохраняем бронь в CRM."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_leads SET status='booked', updated_at=NOW() WHERE id = NULLIF('{{ $('📦 Разобрать бронь').item.json.lead_id }}','')::bigint OR email = '{{ $('📦 Разобрать бронь').item.json.attendee_email }}' OR channel_id = '{{ $('📦 Разобрать бронь').item.json.attendee_email }}'",
+        "options": {}
+      },
+      "id": "f7f965ae-b80f-4c06-91dd-8c4cd63e35c7",
+      "name": "🔄 Лид → booked",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Двигаем лид по воронке в статус 'записан'."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nnn-cal-booking",
+        "options": {}
+      },
+      "id": "30d2148b-d8cc-4bea-956e-5bd07e848982",
+      "name": "🔔 Webhook брони (Cal.com)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "aad41ee3-dbbd-4514-8a33-bc23bf10e687",
+      "notes": "В Cal.com → Settings → Webhooks укажите этот Production URL, событие BOOKING_CREATED."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('📦 Разобрать бронь').item.json.attendee_email }}",
+        "subject": "=Запись подтверждена — {{ $('📦 Разобрать бронь').item.json.service }}",
+        "message": "=<div style=\"font-family:Arial,sans-serif;max-width:600px;\"><h2>Ваша запись подтверждена ✅</h2><p>Здравствуйте, {{ $('📦 Разобрать бронь').item.json.attendee_name }}!</p><p>Услуга: <b>{{ $('📦 Разобрать бронь').item.json.service }}</b><br>Время: <b>{{ $('📦 Разобрать бронь').item.json.start_time }}</b></p><p>Ссылка на встречу: {{ $('📦 Разобрать бронь').item.json.meeting_url }}</p><p>Подготовьте, пожалуйста, договор аренды и все годовые сверки — так аудит пройдёт быстрее.</p><p>До встречи!</p></div>",
+        "options": {}
+      },
+      "id": "e54dcd9c-b1f6-4ad6-9b40-e7b2aba80c70",
+      "name": "📧 Подтверждение клиенту",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        0
+      ],
+      "webhookId": "5dd5f468-a07b-4f79-b911-bf06b97261c0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Письмо-подтверждение записи через тот же Gmail-креденшл."
+    },
+    {
+      "parameters": {
+        "sendTo": "audit-team@your-domain.com",
+        "subject": "=📅 Новая запись: {{ $('📦 Разобрать бронь').item.json.attendee_name }} — {{ $('📦 Разобрать бронь').item.json.service }}",
+        "message": "=<p>Новая запись на услугу.</p><p>Клиент: {{ $('📦 Разобрать бронь').item.json.attendee_name }} ({{ $('📦 Разобрать бронь').item.json.attendee_email }})<br>Время: {{ $('📦 Разобрать бронь').item.json.start_time }}<br>Услуга: {{ $('📦 Разобрать бронь').item.json.service }}</p>",
+        "options": {}
+      },
+      "id": "b4029d24-d270-4b81-8e95-3bcd6c008504",
+      "name": "📨 Уведомить команду",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1104,
+        0
+      ],
+      "webhookId": "4b3c9b46-7d8e-42c4-80f9-d010a31a3066",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Внутреннее уведомление о новой записи. Поставьте адрес команды."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "📦 Разобрать бронь": {
+      "main": [
+        [
+          {
+            "node": "💾 Записать бронь",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Записать бронь": {
+      "main": [
+        [
+          {
+            "node": "🔄 Лид → booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔄 Лид → booked": {
+      "main": [
+        [
+          {
+            "node": "📧 Подтверждение клиенту",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔔 Webhook брони (Cal.com)": {
+      "main": [
+        [
+          {
+            "node": "📦 Разобрать бронь",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📧 Подтверждение клиенту": {
+      "main": [
+        [
+          {
+            "node": "📨 Уведомить команду",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e9d8619c-906e-4d16-be9a-a8fa0bda5c08",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6576d0836e2330f8b97d875b06fa2116455e2e77c223e2b7f6c1cc7c39283f81"
+  },
+  "id": "2aMrK7riJCqxnENj",
+  "tags": []
+}

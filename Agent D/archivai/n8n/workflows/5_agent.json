@@ -1,0 +1,156 @@
+{
+  "id": "archivai-w5",
+  "name": "ArchivAI · 5 · Configuration Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-agent",
+      "name": "Webhook: Agent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-agent"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM agent_context($1::uuid, $2::uuid);",
+        "options": {
+          "queryReplacement": "={{ [ $json.body.user_id || null, $json.body.session_id || null ] }}"
+        }
+      },
+      "id": "pg-agent-ctx",
+      "name": "PG: Load Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/agent",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"message\": $('Webhook: Agent').first().json.body.message, \"history\": $json.history, \"current_config\": $json.config, \"capabilities\": $json.capabilities, \"tools\": $json.tools } }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "ai-agent",
+      "name": "AI: Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT agent_apply($1::uuid, $2::jsonb, 'agent') AS applied;",
+        "options": {
+          "queryReplacement": "={{ [ $('Webhook: Agent').first().json.body.user_id || null, JSON.stringify($json.actions || []) ] }}"
+        }
+      },
+      "id": "pg-agent-apply",
+      "name": "PG: Apply Actions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT agent_run($1::uuid, $2::jsonb, 'agent') AS ran;",
+        "options": {
+          "queryReplacement": "={{ [ $('Webhook: Agent').first().json.body.user_id || null, JSON.stringify($('AI: Agent').first().json.commands || []) ] }}"
+        }
+      },
+      "id": "pg-agent-run",
+      "name": "PG: Run Commands",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1100, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM log_agent_turn($1::uuid, $2::uuid, $3, $4, $5::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [ $('Webhook: Agent').first().json.body.session_id || null, $('Webhook: Agent').first().json.body.user_id || null, $('Webhook: Agent').first().json.body.message, $('AI: Agent').first().json.reply, JSON.stringify($('PG: Apply Actions').first().json.applied || []) ] }}"
+        }
+      },
+      "id": "pg-agent-log",
+      "name": "PG: Log Turn",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1320, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"session_id\": $('PG: Log Turn').first().json.session_id, \"reply\": $('AI: Agent').first().json.reply, \"applied\": $('PG: Apply Actions').first().json.applied, \"ran\": $('PG: Run Commands').first().json.ran, \"config\": $('PG: Log Turn').first().json.config } }}"
+      },
+      "id": "respond-agent",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ran = $('PG: Run Commands').first().json.ran || [];\nconst rp = ran.find(r => r.tool === 'reprocess_documents' && r.ok);\nconst docs = (rp && rp.result && rp.result.documents) || [];\nreturn docs.map(d => ({ json: { doc_id: d.doc_id, filename: d.filename, original_url: d.original_url, pages: d.pages || [] } }));"
+      },
+      "id": "fan-reprocess",
+      "name": "Fan Reprocess",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5678/webhook/ingest",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"doc_id\": $json.doc_id, \"filename\": $json.filename, \"original_url\": $json.original_url, \"pages\": $json.pages } }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-reingest",
+      "name": "HTTP: Re-ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": ($json.error && ($json.error.message || $json.error.description)) || \"agent request failed\" } }}",
+        "options": { "responseCode": 500 }
+      },
+      "id": "respond-agent-error",
+      "name": "Respond: Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [880, 520]
+    }
+  ],
+  "connections": {
+    "Webhook: Agent":    { "main": [[{ "node": "PG: Load Context", "type": "main", "index": 0 }]] },
+    "PG: Load Context":  { "main": [[{ "node": "AI: Agent", "type": "main", "index": 0 }]] },
+    "AI: Agent":         { "main": [[{ "node": "PG: Apply Actions", "type": "main", "index": 0 }], [{ "node": "Respond: Error", "type": "main", "index": 0 }]] },
+    "PG: Apply Actions": { "main": [[{ "node": "PG: Run Commands", "type": "main", "index": 0 }]] },
+    "PG: Run Commands":  { "main": [[{ "node": "PG: Log Turn", "type": "main", "index": 0 }]] },
+    "PG: Log Turn":      { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
+    "Respond":           { "main": [[{ "node": "Fan Reprocess", "type": "main", "index": 0 }]] },
+    "Fan Reprocess":     { "main": [[{ "node": "HTTP: Re-ingest", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,0 +1,39 @@
+{
+  "note": "Демонстрационные дела. Все лица, организации, суммы и обстоятельства вымышлены. Совпадения случайны.",
+  "cases": [
+    {
+      "id": "case_01_postavka",
+      "title": "Взыскание задолженности по договору поставки",
+      "short": "ТОО против ИП, 4 850 000 тг",
+      "expectation": "Сильная позиция истца: договор, накладные, акт сверки, признание долга в переписке. Спор смещён в плоскость качества товара.",
+      "documents": [
+        {"file": "01_iskovoe_zayavlenie.txt", "side": "claimant", "title": "Исковое заявление"},
+        {"file": "02_dogovor_postavki.txt", "side": "claimant", "title": "Договор поставки № 27/2025"},
+        {"file": "03_nakladnye_i_akt.txt", "side": "claimant", "title": "Накладные, акт сверки, платёжное поручение"},
+        {"file": "04_pretenziya_i_perepiska.txt", "side": "claimant", "title": "Претензия и переписка сторон"},
+        {"file": "05_vozrazhenie_otvetchika.txt", "side": "respondent", "title": "Возражение ответчика"}
+      ]
+    },
+    {
+      "id": "case_02_zaliv",
+      "title": "Возмещение ущерба от залива квартиры",
+      "short": "Физическое лицо против соседа, 1 780 000 тг",
+      "expectation": "Средняя позиция: есть акт и оценка, но причина залива и размер ущерба оспариваются, заявлено ходатайство об экспертизе.",
+      "documents": [
+        {"file": "01_iskovoe_zayavlenie.txt", "side": "claimant", "title": "Исковое заявление"},
+        {"file": "02_akt_o_zalive_i_ocenka.txt", "side": "claimant", "title": "Акт о заливе и отчёт об оценке"},
+        {"file": "03_vozrazhenie_otvetchika.txt", "side": "respondent", "title": "Возражение ответчика"}
+      ]
+    },
+    {
+      "id": "case_03_trud",
+      "title": "Взыскание невыплаченной заработной платы",
+      "short": "Бывший работник против ТОО, 2 340 000 тг",
+      "expectation": "Слабая позиция: документов нет, размер требований не подтверждён, работодатель заявил о пропуске срока обращения.",
+      "documents": [
+        {"file": "01_iskovoe_zayavlenie.txt", "side": "claimant", "title": "Исковое заявление"},
+        {"file": "02_otzyv_rabotodatelya.txt", "side": "respondent", "title": "Отзыв работодателя"}
+      ]
+    }
+  ]
+}

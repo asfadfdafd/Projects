@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Разбор материалов дела — демо</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">AI-помощник по гражданским делам</span>
+  <span class="role">Модуль 2 · для судьи</span>
+  <span class="spacer"></span>
+  <a href="/">← К выбору модуля</a>
+</div>
+
+<div class="wrap">
+  <h1>Разбор материалов дела к заседанию</h1>
+  <p class="lead">
+    Загрузите материалы дела целиком — от искового заявления до возражений
+    ответчика. Система соберёт обзор дела, хронологию, спорные точки
+    с цитатами из документов и предложит вопросы сторонам.
+  </p>
+
+  <div class="disclaimer">
+    <strong>Вспомогательный инструмент.</strong> Система структурирует
+    материалы и обозначает вопросы, требующие выяснения. Она не оценивает
+    доказательства, не предлагает решение и не рассчитывает вероятность
+    исхода дела.
+  </div>
+
+  <div id="input-block">
+    <div class="card">
+      <h3>Материалы дела</h3>
+      <div class="drop" id="drop">
+        <b>Перетащите файлы сюда</b> или нажмите, чтобы выбрать<br>
+        <span class="muted">Текстовые файлы, Word (.docx), .rtf и .pdf. Обрабатываются на вашем компьютере, на диск не сохраняются.</span>
+      </div>
+      <input type="file" id="file-input" multiple accept=".txt,.md,.docx,.rtf,.pdf,.doc,.png,.jpg,.jpeg" style="display:none">
+      <ul class="filelist" id="filelist"></ul>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button id="analyze" disabled>Разобрать дело</button>
+        <button class="ghost" id="clear">Очистить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Или откройте готовое дело</h3>
+      <p class="muted" style="margin-top:-4px">
+        Все лица, организации и обстоятельства вымышлены.
+      </p>
+      <div class="demo-cases" id="demo-cases"></div>
+    </div>
+  </div>
+
+  <div id="loading" class="spinner hidden">Разбираем материалы дела…</div>
+  <div id="result" class="hidden"></div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+const files = [];
+const zone = setupDropzone("drop", "file-input", "filelist", files, function () {
+  el("analyze").disabled = files.length === 0;
+});
+
+el("clear").addEventListener("click", function () {
+  zone.clear();
+  el("result").classList.add("hidden");
+  el("input-block").classList.remove("hidden");
+});
+el("analyze").addEventListener("click", function () { run({ documents: files }); });
+renderDemoCases("demo-cases", function (id) { run({ demo_case_id: id }); });
+
+function run(payload) {
+  el("loading").classList.remove("hidden");
+  el("result").classList.add("hidden");
+  api("/api/judge/analyze", payload)
+    .then(render)
+    .catch(function (e) { showError("result", e.message); })
+    .finally(function () { el("loading").classList.add("hidden"); });
+}
+
+function render(a) {
+  const o = a.overview;
+  let h = "";
+
+  h += '<h2 style="margin-top:0">' + esc(a.title) + '</h2>';
+  h += '<dl class="facts">' +
+    '<div><dt>Категория</dt><dd>' + esc(o.category) + '</dd></div>' +
+    '<div><dt>Цена иска</dt><dd>' + esc(o.claim_amount) + '</dd></div>' +
+    '<div><dt>Стороны</dt><dd style="font-size:13.5px">' + esc(o.claimant_type) +
+    ' → ' + esc(o.respondent_type) + '</dd></div>' +
+    '<div><dt>Материалы</dt><dd>' + o.documents_total + ' док. (истец ' +
+    o.documents_claimant + ' / ответчик ' + o.documents_respondent + ')</dd></div>' +
+    '</dl>';
+
+  h += '<div class="privacy" style="margin-top:14px">' + esc(a.no_probability_note) + '</div>';
+
+  /* --- требования ------------------------------------------------------- */
+  if (a.demands) {
+    h += '<h2>Заявленные требования</h2><div class="card">' +
+      '<div style="white-space:pre-wrap;font-size:14px">' + esc(a.demands.text) + '</div>' +
+      '<div class="muted" style="margin-top:8px">Источник: ' +
+      esc(a.demands.document) + '</div></div>';
+  }
+
+  /* --- позиция ответчика ------------------------------------------------ */
+  if (a.respondent_arguments && a.respondent_arguments.length) {
+    h += '<h2>Доводы ответчика</h2><div class="card">' +
+      a.respondent_arguments.map(function (r) {
+        return '<div class="factor"><div class="bar" style="background:var(--navy)"></div>' +
+          '<div class="body"><div>' + esc(r.text) + '</div>' +
+          '<div class="eff">' + esc(r.document) + '</div></div></div>';
+      }).join("") + '</div>';
+  }
+
+  /* --- расхождения между материалами ------------------------------------ */
+  if (a.contradictions && a.contradictions.length) {
+    h += '<h2>Расхождения в материалах сторон</h2>';
+    h += '<p class="lead" style="margin-bottom:14px">Найдено автоматической ' +
+      'сверкой: стороны по-разному описывают одни и те же обстоятельства. ' +
+      'Система не оценивает, кто прав, — показывает обе цитаты рядом.</p>';
+    h += a.contradictions.map(function (d) {
+      return '<div class="diff"><h3>' + esc(d.title) +
+        (d.delta ? '<span class="delta">расхождение ' + esc(d.delta) + '</span>' : '') +
+        '</h3><p class="gist" style="margin:0">' + esc(d.note) + '</p>' +
+        '<div class="vals">' +
+        '<div class="v"><div class="who">Истец</div>' +
+        '<div class="num">' + esc(d.claimant.value) + '</div>' +
+        '<div class="q">«' + esc(d.claimant.quote || "—") + '»</div></div>' +
+        '<div class="v"><div class="who">Ответчик</div>' +
+        '<div class="num">' + esc(d.respondent.value) + '</div>' +
+        '<div class="q">«' + esc(d.respondent.quote || "—") + '»</div></div>' +
+        '</div></div>';
+    }).join("");
+  }
+
+  /* --- спорные точки ---------------------------------------------------- */
+  h += '<h2>Спорные точки</h2>';
+  if (a.issues.length) {
+    h += a.issues.map(function (i) {
+      let s = '<div class="issue' + (i.contested ? " contested" : "") + '">' +
+        '<h3>' + esc(i.title) +
+        '<span class="pill ' + (i.contested ? "warn" : "") + '">' +
+        (i.contested ? "позиции расходятся" : "заявлено одной стороной") +
+        '</span></h3><p class="gist">' + esc(i.gist) + '</p>';
+      s += '<div class="sides">';
+      s += '<div class="side"><div class="who">В материалах истца</div>' +
+        (i.claimant_quote ? '<div class="q">«' + esc(i.claimant_quote) + '»</div>'
+                          : '<div class="muted">Прямых упоминаний нет</div>') +
+        '<div class="weak"><b>Уязвимость позиции истца:</b> ' +
+        esc(i.claimant_weak) + '</div></div>';
+      s += '<div class="side"><div class="who">В материалах ответчика</div>' +
+        (i.respondent_quote ? '<div class="q">«' + esc(i.respondent_quote) + '»</div>'
+                            : '<div class="muted">Прямых упоминаний нет</div>') +
+        '<div class="weak"><b>Уязвимость позиции ответчика:</b> ' +
+        esc(i.respondent_weak) + '</div></div>';
+      s += '</div></div>';
+      return s;
+    }).join("");
+  } else {
+    h += '<div class="card"><p class="muted">Спорных точек по каталогу типовых ' +
+      'вопросов в материалах не обнаружено.</p></div>';
+  }
+
+  /* --- сценарий --------------------------------------------------------- */
+  h += '<h2>Вероятный ход заседания</h2><div class="card">' +
+    '<p style="margin-top:0;font-size:14px">' + esc(a.scenario.note) + '</p>' +
+    '<div class="two-col"><div><h3>На чём сосредоточится спор</h3>' +
+    (a.scenario.focus.length
+      ? '<ul style="margin:0;padding-left:18px;font-size:14px">' +
+        a.scenario.focus.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join("") + '</ul>'
+      : '<p class="muted">—</p>') +
+    '</div><div><h3>Слабые места, требующие проверки</h3>' +
+    '<ul style="margin:0;padding-left:18px;font-size:14px">' +
+    a.scenario.respondent_line.map(function (f) {
+      return '<li><b>у истца:</b> ' + esc(f) + '</li>'; }).join("") +
+    a.scenario.claimant_line.map(function (f) {
+      return '<li><b>у ответчика:</b> ' + esc(f) + '</li>'; }).join("") +
+    '</ul></div></div></div>';
+
+  /* --- хронология ------------------------------------------------------- */
+  h += '<h2>Хронология по материалам дела</h2><div class="card">';
+  if (a.timeline.length) {
+    h += '<ul class="timeline">' + a.timeline.map(function (t) {
+      return '<li><div class="date">' + esc(t.date) + '</div>' +
+        '<div class="ev">' + esc(t.event) + '</div>' +
+        '<div class="src">' + esc(t.document) +
+        (t.mentioned_in > 1 ? ' · упоминается в ' + t.mentioned_in + ' документах' : '') +
+        '</div></li>';
+    }).join("") + '</ul>';
+  } else {
+    h += '<p class="muted">Дат в материалах не обнаружено.</p>';
+  }
+  h += '</div>';
+
+  /* --- вопросы ---------------------------------------------------------- */
+  h += '<h2>Вопросы, которые стоит задать сторонам</h2><div class="card">' +
+    '<ul class="qlist">' + a.questions.map(function (q) {
+      return '<li><div>' + esc(q.question) +
+        '<span class="tag">' + esc(q.issue) + '</span></div></li>';
+    }).join("") + '</ul>' +
+    '<div style="margin-top:14px;display:flex;gap:10px">' +
+    '<button class="small ghost" id="copy-q">Скопировать список</button>' +
+    '<button class="small ghost" onclick="window.print()">Распечатать</button>' +
+    '</div></div>';
+
+  /* --- процессуальный чек-лист ------------------------------------------ */
+  h += '<h2>Процессуальный чек-лист</h2><div class="card">' +
+    a.checklist.map(function (c) {
+      return '<div class="check"><div class="dot ' + esc(c.status) + '"></div>' +
+        '<div><div class="it">' + esc(c.item) + '</div>' +
+        '<div class="nt">' + esc(c.note) + '</div></div></div>';
+    }).join("") + '</div>';
+
+  /* --- состав материалов ------------------------------------------------ */
+  h += '<h2>Состав материалов</h2><div class="card"><table>' +
+    '<thead><tr><th>Документ</th><th>Тип</th><th>Объём</th><th>Даты в документе</th></tr></thead><tbody>' +
+    a.documents.map(function (d) {
+      return '<tr><td>' + esc(d.name) + '</td><td><span class="pill">' +
+        esc(d.kind_label) + '</span></td><td class="num">' +
+        Math.ceil(d.chars / 1000) + ' тыс. зн.</td>' +
+        '<td class="muted">' + esc((d.dates || []).join(", ") || "—") + '</td></tr>';
+    }).join("") + '</tbody></table></div>';
+
+  if (a.warnings && a.warnings.length) {
+    h += '<div class="privacy">При разборе: ' + a.warnings.map(esc).join(" ") + '</div>';
+  }
+
+  h += '<div style="margin-top:16px"><button class="ghost" id="restart">' +
+    'Разобрать другое дело</button></div>';
+
+  el("result").innerHTML = h;
+  el("result").classList.remove("hidden");
+  el("input-block").classList.add("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+
+  el("restart").addEventListener("click", function () {
+    el("result").classList.add("hidden");
+    el("input-block").classList.remove("hidden");
+  });
+  el("copy-q").addEventListener("click", function () {
+    const text = a.questions.map(function (q, i) {
+      return (i + 1) + ". " + q.question + "  [" + q.issue + "]"; }).join("\n");
+    navigator.clipboard.writeText(text).then(function () {
+      el("copy-q").textContent = "Скопировано";
+      setTimeout(function () { el("copy-q").textContent = "Скопировать список"; }, 1800);
+    });
+  });
+}
+</script>
+</body>
+</html>

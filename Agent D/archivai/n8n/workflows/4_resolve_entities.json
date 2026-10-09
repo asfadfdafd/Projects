@@ -1,0 +1,63 @@
+{
+  "id": "archivai-w4",
+  "name": "ArchivAI · 4 · Entity Resolution",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resolve",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-resolve",
+      "name": "Webhook: Resolve",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-resolve"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resolve_entities() AS report;",
+        "options": {}
+      },
+      "id": "pg-resolve",
+      "name": "PG: Resolve Entities",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT compute_dashboard_stats();",
+        "options": {}
+      },
+      "id": "pg-stats",
+      "name": "PG: Recompute Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [660, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('PG: Resolve Entities').first().json.report }}"
+      },
+      "id": "respond-resolve",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [880, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Resolve":     { "main": [[{ "node": "PG: Resolve Entities", "type": "main", "index": 0 }]] },
+    "PG: Resolve Entities": { "main": [[{ "node": "PG: Recompute Stats", "type": "main", "index": 0 }]] },
+    "PG: Recompute Stats":  { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

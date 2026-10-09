@@ -1,0 +1,19 @@
+# Env & secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+web/node_modules/
+
+# Data / uploads
+samples/*
+!samples/README.md
+
+# OS
+.DS_Store

@@ -1,0 +1,160 @@
+name: archivai
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro   # schema auto-applied on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the bucket on startup, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb -p local/$${MINIO_BUCKET} || true &&
+      mc anonymous set download local/$${MINIO_BUCKET} || true &&
+      mc mb -p local/$${CONNECTOR_BUCKET} || true &&
+      mc anonymous set download local/$${CONNECTOR_BUCKET} || true
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      CONNECTOR_BUCKET: ${CONNECTOR_BUCKET:-import}
+
+  # Open-source model server (OCR vision-LLM, text LLM, embeddings).
+  # Pull models once with:  docker compose exec ollama ollama pull qwen2.5vl:7b
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment to use an NVIDIA GPU (strongly recommended for the vision model):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  ai-service:
+    build: ./services/ai
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/ai/app:/app/app:ro   # dev: live-reload code
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      # Postgres as n8n's own datastore too:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      # n8n ships a pool of 2 connections. Our workflows run several Postgres
+      # queries per execution and the schedules overlap, so on a busy box the pool
+      # starves and every webhook answers 503 ("Database connection timed out").
+      DB_POSTGRESDB_POOL_SIZE: ${N8N_DB_POOL_SIZE:-8}
+      # Execution history is stored in the same database and grows without bound
+      # (thousands of rows after a few smoke runs), which is what starves it first.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: ${N8N_EXEC_MAX_AGE_HOURS:-72}
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: ${N8N_EXEC_MAX_COUNT:-500}
+      # A model call that hangs must not hold an execution (and its DB connections)
+      # forever — the ingest HTTP node has its own longer timeout for real work.
+      EXECUTIONS_TIMEOUT: ${N8N_EXEC_TIMEOUT:-2400}
+      EXECUTIONS_TIMEOUT_MAX: 7200
+      # Passed through to workflow nodes:
+      AI_SERVICE_URL: ${AI_SERVICE_URL}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      # Phase 7 connectors: bulk-pull source bucket + legacy-system push target
+      CONNECTOR_BUCKET: ${CONNECTOR_BUCKET:-import}
+      CLIENT_WEBHOOK_URL: ${CLIENT_WEBHOOK_URL:-http://127.0.0.1:5678/webhook/client-sink}
+      # The web app splits PDFs pulled from the source bucket into page images
+      # (it owns object-storage writes). Optional: if web is down, the connector
+      # still ingests and the AI service splits the PDF during /process.
+      WEB_INTERNAL_URL: ${WEB_INTERNAL_URL:-http://web:3000}
+      # n8n 2.0 blocks $env in expressions by default; our workflows read
+      # AI_SERVICE_URL via $env, and this is a trusted single-tenant instance
+      # running only ArchivAI's own workflows — so unblock it explicitly.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    profiles: ["full"]   # start with `--profile full` / `make full`
+
+volumes:
+  pg_data:
+  minio_data:
+  ollama_data:
+  n8n_data:

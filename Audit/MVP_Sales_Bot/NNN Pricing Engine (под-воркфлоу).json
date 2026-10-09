@@ -1,0 +1,123 @@
+{
+  "name": "NNN Pricing Engine (под-воркфлоу)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1000001-0000-4000-8000-000000000001",
+      "name": "▶️ Вход: lead_id + анкета",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "Принимает { lead_id, chat_id, answers } — разобранные поля анкеты. Возвращает цену, breakdown и текст КП."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT 'base' AS rule_type, 'base' AS factor, code AS condition, base_price AS value FROM nnn_services WHERE is_active UNION ALL SELECT rule_type, factor, condition, value FROM nnn_pricing_rules WHERE is_active",
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000002",
+      "name": "📚 Правила цены из БД",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [224, 0],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Базовые цены (nnn_services) + множители/добавки/конфиг (nnn_pricing_rules). Менять цифры — в БД, не в коде."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ДЕТЕРМИНИРОВАННЫЙ расчёт цены по правилам из БД. LLM число НЕ трогает.\nconst rules = $input.all().map(i => i.json);\nconst inp = $('▶️ Вход: lead_id + анкета').first().json;\nconst a = inp.answers || {};\nconst find = (t, f, c) => rules.find(x => x.rule_type === t && x.factor === f && (c === undefined || x.condition === c));\nconst num = v => v == null ? null : Number(v);\nconst base = num((find('base','base', a.audit_type) || {}).value);\nif (base == null) throw new Error('Неизвестный вид аудита: ' + a.audit_type);\nconst revM = num((find('multiplier','revenue_band', a.revenue_band) || {}).value) ?? 1;\nconst empM = num((find('multiplier','employees', a.employees) || {}).value) ?? 1;\nconst stdM = num((find('multiplier','standard', a.standard) || {}).value) ?? 1;\nconst urgency = (Number(a.deadline_days) > 0 && Number(a.deadline_days) < 30) ? 'urgent' : 'normal';\nconst urgM = num((find('multiplier','urgency', urgency) || {}).value) ?? 1;\nconst years = Math.max(1, parseInt(a.years) || 1);\nconst entities = Math.max(1, parseInt(a.entities) || 1);\nconst extraYear = num((find('additive','extra_year') || {}).value) ?? 0.8;\nconst extraEntity = num((find('additive','extra_entity') || {}).value) ?? 0.2;\nconst cfg = f => num((find('config', f) || {}).value);\nconst subtotal = base * revM * empM * stdM * urgM;\nconst scopeAdd = base * extraYear * (years - 1) + base * extraEntity * Math.min(entities - 1, 5);\nconst roundTo = cfg('round_to') || 50000;\nlet price = Math.round((subtotal + scopeAdd) / roundTo) * roundTo;\nconst floor = cfg('floor') || 0;\nif (price < floor) price = floor;\nconst threshold = cfg('review_threshold');\nconst needs_review = threshold != null && price > threshold;\nconst labels = { statutory: 'обязательный аудит', voluntary: 'инициативный аудит', subsoil: 'аудит недропользователя', tax: 'налоговый аудит', due_diligence: 'due diligence / спецзадание' };\nconst fmt = n => Math.round(n).toLocaleString('ru-RU') + ' ₸';\nconst breakdown = { base, audit_type: a.audit_type, revenue_mult: revM, employee_mult: empM, standard_mult: stdM, urgency, urgency_mult: urgM, years, entities, subtotal: Math.round(subtotal), scope_add: Math.round(scopeAdd), floor, round_to: roundTo, review_threshold: threshold };\nreturn [{ json: { lead_id: inp.lead_id, chat_id: inp.chat_id, answers: a, service_code: a.audit_type, service_label: labels[a.audit_type] || a.audit_type, price, price_formatted: fmt(price), currency: 'KZT', breakdown, needs_review } }];"
+      },
+      "id": "a1000001-0000-4000-8000-000000000003",
+      "name": "🧮 Рассчитать цену (правила)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [448, 0],
+      "notes": "Формула из Sample_Price_List_and_Logic.md: base × множители + добавки за годы/юрлица, округление, floor, флаг ручной проверки."
+    },
+    {
+      "parameters": {
+        "jsCode": "// LLM ТОЛЬКО ФОРМУЛИРУЕТ текст КП вокруг уже посчитанной цены.\nconst d = $json;\nconst a = d.answers || {};\nconst system = 'Ты — менеджер аудиторской компании. Пишешь короткое коммерческое предложение (КП) клиенту в чат: дружелюбный деловой тон, на русском, без markdown и без таблиц, 6-10 предложений. НИКОГДА не меняй и не пересчитывай цену — используй её ровно как передана. Не упоминай технические названия полей. Структура: приветствие по имени компании; что входит в услугу; срок; итоговая стоимость; что дальше (подтвердить — и пришлём договор на электронную подпись).';\nconst user = 'Данные для КП. Компания: ' + (a.company_name || 'клиент') + '. Контакт: ' + (a.contact_name || '') + '. Услуга: ' + d.service_label + '. Стандарт отчётности: ' + (a.standard === 'ifrs' ? 'МСФО' : 'НСФО') + '. Периодов (лет): ' + (a.years || 1) + '. Юрлиц: ' + (a.entities || 1) + '. Желаемый срок: ' + (a.deadline_days || '—') + ' дней' + (d.breakdown.urgency === 'urgent' ? ' (срочно)' : '') + '. ИТОГОВАЯ ЦЕНА: ' + d.price_formatted + ' (использовать ровно эту сумму). Допконтекст от клиента: ' + (a.notes || 'нет') + '.';\nreturn [{ json: { ...d, body: JSON.stringify({ model: 'llama-3.3-70b-versatile', temperature: 0.3, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) } }];"
+      },
+      "id": "a1000001-0000-4000-8000-000000000004",
+      "name": "🧠 Запрос: текст КП",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [672, 0],
+      "notes": "Гибрид по плану: правила считают число, Groq пишет человеческий текст КП."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000005",
+      "name": "🤖 Call Groq AI (КП)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [896, 0],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "J1eRU7UjeN3Iryr0",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Тот же Groq API/креденшл, что в NNN Analysis Engine."
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('🧠 Запрос: текст КП').first().json;\nlet text = $json.choices?.[0]?.message?.content || '';\ntext = String(text).replace(/```/g, '').trim();\nif (!text) text = 'Коммерческое предложение: ' + meta.service_label + '. Стоимость: ' + meta.price_formatted + '. Подтвердите — и мы направим договор на электронную подпись.';\nreturn [{ json: { lead_id: meta.lead_id, chat_id: meta.chat_id, service_code: meta.service_code, service_label: meta.service_label, price: meta.price, price_formatted: meta.price_formatted, currency: meta.currency, breakdown: meta.breakdown, needs_review: meta.needs_review, proposal_text: text } }];"
+      },
+      "id": "a1000001-0000-4000-8000-000000000006",
+      "name": "📦 Вернуть результат",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 0],
+      "notes": "Фолбэк-текст на случай ошибки Groq. Это выход под-воркфлоу."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "▶️ Вход: lead_id + анкета": {
+      "main": [[{ "node": "📚 Правила цены из БД", "type": "main", "index": 0 }]]
+    },
+    "📚 Правила цены из БД": {
+      "main": [[{ "node": "🧮 Рассчитать цену (правила)", "type": "main", "index": 0 }]]
+    },
+    "🧮 Рассчитать цену (правила)": {
+      "main": [[{ "node": "🧠 Запрос: текст КП", "type": "main", "index": 0 }]]
+    },
+    "🧠 Запрос: текст КП": {
+      "main": [[{ "node": "🤖 Call Groq AI (КП)", "type": "main", "index": 0 }]]
+    },
+    "🤖 Call Groq AI (КП)": {
+      "main": [[{ "node": "📦 Вернуть результат", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "instanceId": "6576d0836e2330f8b97d875b06fa2116455e2e77c223e2b7f6c1cc7c39283f81"
+  },
+  "tags": []
+}

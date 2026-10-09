@@ -1,0 +1,90 @@
+{
+  "id": "archivai-w2",
+  "name": "ArchivAI · 2 · Search",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-search",
+      "name": "Webhook: Search",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-search"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"texts\": [ $json.body.query ] } }}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "ai-embed-q",
+      "name": "AI: Embed Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const vec = $('AI: Embed Query').first().json.vectors[0];\nconst body = $('Webhook: Search').first().json.body;\nconst q = body.query || '';\nreturn [{ json: { vec: '[' + vec.join(',') + ']', q, user_id: body.user_id || null, ip: body.ip || null } }];"
+      },
+      "id": "fmt-q",
+      "name": "Format Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM search_and_log($1::vector, $2, $3::uuid, $4);",
+        "options": {
+          "queryReplacement": "={{ [ $json.vec, $json.q, $json.user_id, $json.ip ] }}"
+        }
+      },
+      "id": "pg-search",
+      "name": "PG: Search",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 300],
+      "alwaysOutputData": true,
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r && r.document_id);\nconst q = $('Webhook: Search').first().json.body.query || '';\nreturn [{ json: { query: q, count: rows.length, results: rows } }];"
+      },
+      "id": "fmt-results",
+      "name": "Format Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"query\": $json.query, \"count\": $json.count, \"results\": $json.results } }}"
+      },
+      "id": "respond-search",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1320, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Search": { "main": [[{ "node": "AI: Embed Query", "type": "main", "index": 0 }]] },
+    "AI: Embed Query": { "main": [[{ "node": "Format Query", "type": "main", "index": 0 }]] },
+    "Format Query":    { "main": [[{ "node": "PG: Search", "type": "main", "index": 0 }]] },
+    "PG: Search":      { "main": [[{ "node": "Format Results", "type": "main", "index": 0 }]] },
+    "Format Results":  { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

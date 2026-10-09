@@ -1,0 +1,26 @@
+# Зависимости и кэши
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+.cache/
+
+# Сборки и рендеры
+dist/
+build/
+out/
+.next/
+.work/
+
+# Секреты (шаблоны .env.example остаются)
+.env
+.env.*
+!.env.example
+
+# Системный мусор
+.DS_Store
+
+# Тяжёлые исходные видеозаписи (GitHub не для них)
+Agent D/GMT*.mp4
+Agent D/Demo material/*.mov

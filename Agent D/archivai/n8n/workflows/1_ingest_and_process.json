@@ -1,0 +1,171 @@
+{
+  "id": "archivai-w1",
+  "name": "ArchivAI · 1 · Ingest & Process",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-ingest",
+      "name": "Webhook: Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-ingest"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM create_document($1, $2, $3, $4::uuid);",
+        "options": {
+          "queryReplacement": "={{ [ $json.body.filename, $json.body.original_url || null, $json.body.page_count || ($json.body.pages ? $json.body.pages.length : 1), $json.body.doc_id || null ] }}"
+        }
+      },
+      "id": "pg-create-doc",
+      "name": "PG: Create Document",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"doc_id\": $('PG: Create Document').first().json.doc_id, \"status\": \"processing\" } }}",
+        "options": { "responseCode": 202 }
+      },
+      "id": "respond-accepted",
+      "name": "Respond: Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/process",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"pages\": $('Webhook: Ingest').first().json.body.pages, \"taxonomy\": $('PG: Create Document').first().json.taxonomy || null } }}",
+        "options": { "timeout": 1900000 }
+      },
+      "id": "ai-process",
+      "name": "AI: OCR + Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $('PG: Create Document').first().json.doc_id;\nconst r = $('AI: OCR + Extract').first().json;\nconst inPages = $('Webhook: Ingest').first().json.body.pages || [];\nconst ex = r.extraction || {};\nconst pts = r.page_texts || [];\n// ocr_text = reading order (search/embeddings), layout_text = display variant\n// (PDF text layer only; scans have none).\nconst pages = pts.map((p, i) => ({\n  page_no: p.page_no || (i + 1),\n  image_url: (inPages[i] || {}).image_url || null,\n  ocr_text: p.text || '',\n  layout_text: p.layout_text || null,\n  confidence: p.confidence != null ? p.confidence : null\n}));\nconst payload = {\n  document_type: ex.document_type || null,\n  date_text: ex.date_text || null,\n  language: ex.language || null,\n  sender: ex.sender || {},\n  recipient: ex.recipient || {},\n  summary: ex.summary || null,\n  full_text: r.full_text || '',\n  confidence: r.confidence != null ? String(r.confidence) : '',\n  ocr_backend: r.ocr_backend || null,\n  extract_backend: r.extract_backend || null,\n  entities: ex.entities || [],\n  pages: pages\n};\n// One embedding per chunk (page-sized): a single vector for a long document\n// matches no specific query. Falls back to the whole text if the AI service is\n// an older build that does not return chunks.\nconst chunks = ((r.chunks && r.chunks.length) ? r.chunks\n  : [{ chunk_no: 0, text: r.full_text || '' }])\n  .filter(c => (c.text || '').trim());\nreturn [{ json: { doc_id: doc, payload, full_text: r.full_text || '', chunks } }];"
+      },
+      "id": "build-payload",
+      "name": "Build Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ingest_extraction($1::uuid, $2::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [ $json.doc_id, JSON.stringify($json.payload) ] }}"
+        }
+      },
+      "id": "pg-ingest",
+      "name": "PG: Ingest Extraction",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1320, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"texts\": $('Build Payload').first().json.chunks.map(c => c.text) } }}",
+        "options": { "timeout": 900000 }
+      },
+      "id": "ai-embed",
+      "name": "AI: Embed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per chunk → the Postgres node below runs once per chunk.\nconst vecs = $('AI: Embed').first().json.vectors || [];\nconst b = $('Build Payload').first().json;\nreturn b.chunks.slice(0, vecs.length).map((c, i) => ({\n  json: {\n    doc_id: b.doc_id,\n    chunk_no: c.chunk_no != null ? c.chunk_no : i,\n    text: c.text,\n    vec: '[' + vecs[i].join(',') + ']'\n  }\n}));"
+      },
+      "id": "fmt-vec",
+      "name": "Format Vector",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT upsert_embedding($1::uuid, $2::int, $3, $4::vector);",
+        "options": {
+          "queryReplacement": "={{ [ $json.doc_id, $json.chunk_no, $json.text, $json.vec ] }}"
+        }
+      },
+      "id": "pg-embed",
+      "name": "PG: Store Embedding",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1980, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT compute_dashboard_stats();",
+        "options": {}
+      },
+      "id": "pg-stats",
+      "name": "PG: Recompute Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2200, 300],
+      "executeOnce": true,
+      "notes": "Runs once even though the previous node now emits one item per chunk — the stats query is heavy.",
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT mark_failed($1::uuid, $2);",
+        "options": {
+          "queryReplacement": "={{ [ $('PG: Create Document').first().json.doc_id, ($json.error && ($json.error.message || $json.error.description)) || JSON.stringify($json.error || $json).slice(0, 1200) ] }}"
+        }
+      },
+      "id": "pg-mark-failed",
+      "name": "PG: Mark Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1320, 520],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    }
+  ],
+  "connections": {
+    "Webhook: Ingest":      { "main": [[{ "node": "PG: Create Document", "type": "main", "index": 0 }]] },
+    "PG: Create Document":  { "main": [[{ "node": "Respond: Accepted", "type": "main", "index": 0 }]] },
+    "Respond: Accepted":    { "main": [[{ "node": "AI: OCR + Extract", "type": "main", "index": 0 }]] },
+    "AI: OCR + Extract":    { "main": [[{ "node": "Build Payload", "type": "main", "index": 0 }], [{ "node": "PG: Mark Failed", "type": "main", "index": 0 }]] },
+    "Build Payload":        { "main": [[{ "node": "PG: Ingest Extraction", "type": "main", "index": 0 }]] },
+    "PG: Ingest Extraction":{ "main": [[{ "node": "AI: Embed", "type": "main", "index": 0 }]] },
+    "AI: Embed":            { "main": [[{ "node": "Format Vector", "type": "main", "index": 0 }], [{ "node": "PG: Mark Failed", "type": "main", "index": 0 }]] },
+    "Format Vector":        { "main": [[{ "node": "PG: Store Embedding", "type": "main", "index": 0 }]] },
+    "PG: Store Embedding":  { "main": [[{ "node": "PG: Recompute Stats", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

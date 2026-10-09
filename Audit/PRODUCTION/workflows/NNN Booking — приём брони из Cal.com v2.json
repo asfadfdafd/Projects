@@ -1,0 +1,208 @@
+{
+  "name": "NNN Booking — приём брони из Cal.com v2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nnn-cal-booking",
+        "options": {}
+      },
+      "id": "30d2148b-d8cc-4bec-a733-bc23bf10e687",
+      "name": "🔔 Webhook брони (Cal.com)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "aad41ee3-dbbd-4514-8a33-bc23bf10e687",
+      "notes": "Cal.com → Settings → Webhooks → Production URL этого воркфлоу, событие BOOKING_CREATED."
+    },
+    {
+      "parameters": {
+        "jsCode": "const root = $json.body || $json;\nconst b = root.payload || root;\nconst att = (b.attendees && b.attendees[0]) || {};\nconst meta = b.metadata || {};\nconst service = (b.eventType && b.eventType.title) || b.eventTitle || b.type || 'Консультация';\nconst leadId = meta.lead_id || meta['lead_id'] || '';\nreturn [{ json: {\n  external_id: b.uid || b.id || '',\n  attendee_name: att.name || '',\n  attendee_email: att.email || '',\n  service,\n  lead_id: String(leadId || ''),\n  start_time: b.startTime || null,\n  end_time: b.endTime || null,\n  meeting_url: (b.metadata && (b.metadata.videoCallUrl || b.metadata.videoCallData)) || b.location || ''\n} }];"
+      },
+      "id": "2f9ddab2-b64a-4e4d-848b-fbd23c2556ab",
+      "name": "📦 Разобрать бронь",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "notes": "Достаём имя, email, услугу, время, ссылку на встречу и lead_id из metadata."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO nnn_bookings (external_id, attendee_name, attendee_email, service, start_time, end_time, meeting_url, status) VALUES ($1,$2,$3,$4, NULLIF($5,'')::timestamptz, NULLIF($6,'')::timestamptz, $7, 'confirmed') ON CONFLICT (external_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ $json.external_id }}, {{ $json.attendee_name }}, {{ $json.attendee_email }}, {{ $json.service }}, {{ $json.start_time }}, {{ $json.end_time }}, {{ $json.meeting_url }}"
+        }
+      },
+      "id": "09726d0e-e4dc-4ab5-959b-50a1c5af99cd",
+      "name": "💾 Записать бронь",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [480, 0],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Сохраняем бронь в CRM."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE nnn_leads SET status='booked', state='booked', updated_at=NOW() WHERE (id = NULLIF('{{ $('📦 Разобрать бронь').item.json.lead_id }}','')::bigint) OR (email = '{{ $('📦 Разобрать бронь').item.json.attendee_email }}')",
+        "options": {}
+      },
+      "id": "f7f965ae-b80f-4c06-91dd-8c4cd63ef8a1",
+      "name": "🔄 Лид → state: booked",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [720, 0],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Обновляем и status, и state — чтобы state machine бота знала о записи."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT channel_id FROM nnn_leads WHERE (id = NULLIF('{{ $('📦 Разобрать бронь').item.json.lead_id }}','')::bigint) OR (email = '{{ $('📦 Разобрать бронь').item.json.attendee_email }}') LIMIT 1",
+        "options": {}
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "🔍 Найти Telegram лида",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [960, 0],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Берём channel_id (Telegram chat_id) лида по lead_id или email."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"},
+          "conditions": [
+            {
+              "leftValue": "={{ $json.channel_id }}",
+              "rightValue": "",
+              "operator": {"type": "string", "operation": "notEmpty"}
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "❓ Есть Telegram?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1200, 0],
+      "notes": "TRUE → шлём Telegram. FALSE → только email."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🔍 Найти Telegram лида').item.json.channel_id }}",
+        "text": "=✅ *Запись подтверждена!*\n\n📅 Дата и время: `{{ $('📦 Разобрать бронь').item.json.start_time }}`\n🎯 {{ $('📦 Разобрать бронь').item.json.service }}{{ $('📦 Разобрать бронь').item.json.meeting_url ? '\n🔗 Ссылка на встречу: ' + $('📦 Разобрать бронь').item.json.meeting_url : '' }}\n\nНаш специалист тоже получил уведомление. До встречи! 👋",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      "name": "📱 Telegram: подтверждение клиенту",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1440, -140],
+      "onError": "continueRegularOutput",
+      "notes": "Клиент получает подтверждение прямо в Telegram. Привяжите тот же Telegram-креденшл, что в Sales Bot."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('📦 Разобрать бронь').item.json.attendee_email }}",
+        "subject": "=Запись подтверждена — {{ $('📦 Разобрать бронь').item.json.service }}",
+        "message": "=<div style=\"font-family:Arial,sans-serif;max-width:600px;\">\n  <h2>Ваша запись подтверждена ✅</h2>\n  <p>Здравствуйте, {{ $('📦 Разобрать бронь').item.json.attendee_name }}!</p>\n  <p>\n    Услуга: <b>{{ $('📦 Разобрать бронь').item.json.service }}</b><br>\n    Дата: <b>{{ $('📦 Разобрать бронь').item.json.start_time }}</b>\n  </p>\n  {{ $('📦 Разобрать бронь').item.json.meeting_url\n    ? '<p>Ссылка на встречу: <a href=\"' + $('📦 Разобрать бронь').item.json.meeting_url + '\">' + $('📦 Разобрать бронь').item.json.meeting_url + '</a></p>'\n    : '' }}\n  <p>Наш специалист свяжется с вами для подтверждения деталей.</p>\n  <p style=\"color:#999;font-size:12px;\">Если у вас изменились планы — отмените запись по ссылке в письме от Cal.com.</p>\n</div>",
+        "options": {}
+      },
+      "id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+      "name": "📧 Подтверждение клиенту (email)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1680, 0],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Email-подтверждение клиенту. Подходит и тем, у кого нет Telegram."
+    },
+    {
+      "parameters": {
+        "sendTo": "team@example.com",
+        "subject": "=📅 Новая запись: {{ $('📦 Разобрать бронь').item.json.attendee_name }} — {{ $('📦 Разобрать бронь').item.json.service }}",
+        "message": "=<p>Новая запись на консультацию.</p>\n<p>\n  Клиент: <b>{{ $('📦 Разобрать бронь').item.json.attendee_name }}</b>\n  ({{ $('📦 Разобрать бронь').item.json.attendee_email }})<br>\n  Время: <b>{{ $('📦 Разобрать бронь').item.json.start_time }}</b><br>\n  Услуга: {{ $('📦 Разобрать бронь').item.json.service }}\n</p>\n{{ $('📦 Разобрать бронь').item.json.meeting_url\n  ? '<p>Ссылка на встречу: ' + $('📦 Разобрать бронь').item.json.meeting_url + '</p>'\n  : '' }}",
+        "options": {}
+      },
+      "id": "e5f6a7b8-c9d0-1234-efab-345678901234",
+      "name": "📨 Уведомить команду",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1920, 0],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "y9pyHINGyojNWYWW",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Замените team@example.com на реальный адрес команды."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "🔔 Webhook брони (Cal.com)": {
+      "main": [[{"node": "📦 Разобрать бронь", "type": "main", "index": 0}]]
+    },
+    "📦 Разобрать бронь": {
+      "main": [[{"node": "💾 Записать бронь", "type": "main", "index": 0}]]
+    },
+    "💾 Записать бронь": {
+      "main": [[{"node": "🔄 Лид → state: booked", "type": "main", "index": 0}]]
+    },
+    "🔄 Лид → state: booked": {
+      "main": [[{"node": "🔍 Найти Telegram лида", "type": "main", "index": 0}]]
+    },
+    "🔍 Найти Telegram лида": {
+      "main": [[{"node": "❓ Есть Telegram?", "type": "main", "index": 0}]]
+    },
+    "❓ Есть Telegram?": {
+      "main": [
+        [{"node": "📱 Telegram: подтверждение клиенту", "type": "main", "index": 0}],
+        [{"node": "📧 Подтверждение клиенту (email)", "type": "main", "index": 0}]
+      ]
+    },
+    "📱 Telegram: подтверждение клиенту": {
+      "main": [[{"node": "📧 Подтверждение клиенту (email)", "type": "main", "index": 0}]]
+    },
+    "📧 Подтверждение клиенту (email)": {
+      "main": [[{"node": "📨 Уведомить команду", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "",
+  "tags": []
+}

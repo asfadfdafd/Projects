@@ -1,0 +1,131 @@
+{
+  "id": "archivai-w3",
+  "name": "ArchivAI · 3 · Ask ArchivAI (RAG chat)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-chat",
+      "name": "Webhook: Chat",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-chat"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"texts\": [ $json.body.question ] } }}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "ai-embed-q",
+      "name": "AI: Embed Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const vec = $('AI: Embed Question').first().json.vectors[0];\nconst body = $('Webhook: Chat').first().json.body;\nreturn [{ json: { vec: '[' + vec.join(',') + ']', user_id: body.user_id || null } }];"
+      },
+      "id": "fmt-vec",
+      "name": "Format Vector",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM rag_retrieve_cfg($1::vector, $2::uuid);",
+        "options": { "queryReplacement": "={{ [ $json.vec, $json.user_id ] }}" }
+      },
+      "id": "pg-retrieve",
+      "name": "PG: Retrieve Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 300],
+      "alwaysOutputData": true,
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r && r.document_id);\nconst contexts = rows.map((r, idx) => ({ ref: idx + 1, document_id: r.document_id, filename: r.filename, text: r.content || '' }));\nconst question = $('Webhook: Chat').first().json.body.question;\nconst style = rows.length ? (rows[0].style || null) : null;\nreturn [{ json: { question, contexts, style } }];"
+      },
+      "id": "build-ctx",
+      "name": "Build Contexts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_SERVICE_URL }}/answer",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"question\": $json.question, \"contexts\": $json.contexts, \"style\": $json.style } }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "ai-answer",
+      "name": "AI: Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $('Webhook: Chat').first().json.body;\nconst ans = $('AI: Answer').first().json;\nreturn [{ json: {\n  session_id: body.session_id || null,\n  user_id: body.user_id || null,\n  question: body.question,\n  answer: ans.answer,\n  citations: JSON.stringify(ans.citations || []),\n  grounded: ans.grounded\n} }];"
+      },
+      "id": "prep-log",
+      "name": "Prepare Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT log_chat_turn($1::uuid, $2::uuid, $3, $4, $5::jsonb) AS session_id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.session_id, $json.user_id, $json.question, $json.answer, $json.citations ] }}"
+        }
+      },
+      "id": "pg-log",
+      "name": "PG: Log Turn",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1760, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"session_id\": $('PG: Log Turn').first().json.session_id, \"answer\": $('AI: Answer').first().json.answer, \"citations\": $('AI: Answer').first().json.citations, \"grounded\": $('AI: Answer').first().json.grounded } }}"
+      },
+      "id": "respond-chat",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1980, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Chat":        { "main": [[{ "node": "AI: Embed Question", "type": "main", "index": 0 }]] },
+    "AI: Embed Question":   { "main": [[{ "node": "Format Vector", "type": "main", "index": 0 }]] },
+    "Format Vector":        { "main": [[{ "node": "PG: Retrieve Context", "type": "main", "index": 0 }]] },
+    "PG: Retrieve Context": { "main": [[{ "node": "Build Contexts", "type": "main", "index": 0 }]] },
+    "Build Contexts":       { "main": [[{ "node": "AI: Answer", "type": "main", "index": 0 }]] },
+    "AI: Answer":           { "main": [[{ "node": "Prepare Log", "type": "main", "index": 0 }]] },
+    "Prepare Log":          { "main": [[{ "node": "PG: Log Turn", "type": "main", "index": 0 }]] },
+    "PG: Log Turn":         { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

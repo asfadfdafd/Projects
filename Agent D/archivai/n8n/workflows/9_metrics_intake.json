@@ -1,0 +1,51 @@
+{
+  "id": "archivai-w9",
+  "name": "ArchivAI · 9 · Metrics Intake (IoT)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metrics",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-metrics",
+      "name": "Webhook: Metrics",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-metrics"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ingest_metric($1::jsonb) AS stored;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.body || {}) ] }}"
+        }
+      },
+      "id": "pg-ingest-metric",
+      "name": "PG: Ingest Metric",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"stored\": $('PG: Ingest Metric').first().json.stored } }}"
+      },
+      "id": "respond-metrics",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [660, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Metrics":  { "main": [[{ "node": "PG: Ingest Metric", "type": "main", "index": 0 }]] },
+    "PG: Ingest Metric": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

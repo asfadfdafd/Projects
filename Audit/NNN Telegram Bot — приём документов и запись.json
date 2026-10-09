@@ -1,0 +1,689 @@
+{
+  "name": "NNN Telegram Bot — приём документов и запись",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "61b93395-fcaf-4b4d-bacc-9d3a85565533",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1760,
+        208
+      ],
+      "webhookId": "860882d6-b3b8-484e-a14b-c04b6fe314f1",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Слушает сообщения бота. Создайте бота у @BotFather и вставьте токен в креденшл."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-doc",
+              "leftValue": "={{ $json.message.document }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2008e98b-15e8-4c49-94c8-5f323de09b1b",
+      "name": "❓ Это документ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1536,
+        208
+      ],
+      "notes": "TRUE → обработка PDF. FALSE → приветствие/подсказка."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.message.chat.id }}",
+        "text": "👋 Здравствуйте! Я помогу проверить ваши NNN-расходы.\n\nПришлите два PDF по очереди:\n1) договор аренды,\n2) годовую сверку расходов.\n\nКак получу оба — за пару минут пришлю список ошибок, сумму возможной переплаты и черновик письма арендодателю.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "503cc1bf-966f-45f4-8642-e0860683c123",
+      "name": "💬 Приветствие",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1328,
+        368
+      ],
+      "webhookId": "1a0550b0-a551-435b-8495-96d5582f0f3a",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Ответ на текст/команды."
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.message.document.file_id }}",
+        "additionalFields": {}
+      },
+      "id": "76490913-5275-4613-8d08-866316117476",
+      "name": "⬇️ Скачать файл",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1328,
+        80
+      ],
+      "webhookId": "9a25a069-5039-47c3-875c-e0e2533f7128",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Скачивает PDF из Telegram в бинарное поле data."
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {
+          "joinPages": true
+        }
+      },
+      "id": "75978ae1-074f-4870-a8da-1b3a84aad7d9",
+      "name": "📄 Извлечь текст из PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        80
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Текст из присланного PDF."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*)::int AS cnt FROM nnn_tg_intake WHERE chat_id = '{{ $('Telegram Trigger').item.json.message.chat.id }}'",
+        "options": {}
+      },
+      "id": "c9c6ccb0-2d2f-4139-9e57-b400d3764c5d",
+      "name": "🔢 Сколько уже файлов?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -880,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Считаем, сколько документов уже прислал этот чат."
+    },
+    {
+      "parameters": {
+        "jsCode": "const cnt = $json.cnt ?? 0;\nconst trig = $('Telegram Trigger').first().json;\nconst text = $('📄 Извлечь текст из PDF').first().json.text || '';\nconst role = cnt === 0 ? 'contract' : 'reconciliation';\nreturn [{ json: { chat_id: String(trig.message.chat.id), role, file_name: trig.message.document.file_name || '', doc_text: text, cnt } }];"
+      },
+      "id": "2aba6f69-3234-4a97-acb3-714e59955637",
+      "name": "🏷 Определить роль файла",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        80
+      ],
+      "notes": "Первый файл = договор, второй = сверка."
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "nnn_tg_intake"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $json.chat_id }}",
+            "role": "={{ $json.role }}",
+            "file_name": "={{ $json.file_name }}",
+            "doc_text": "={{ $json.doc_text }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "69b5e2c1-a2f9-43b3-9452-0ead745d3998",
+      "name": "💾 Сохранить документ",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -448,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Кладём текст документа в буфер приёма."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "have-both",
+              "leftValue": "={{ $('🏷 Определить роль файла').item.json.cnt }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "50df9d65-29ff-4c54-8332-ba2374b0558c",
+      "name": "❓ Оба документа собраны?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        80
+      ],
+      "notes": "TRUE → запускаем анализ. FALSE → просим второй файл."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "✅ Получил первый документ (1/2). Пришлите, пожалуйста, второй PDF — годовую сверку расходов.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "95c39fef-f109-49f4-ae39-a5c4c1222bb9",
+      "name": "💬 Жду второй файл",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        272
+      ],
+      "webhookId": "810aad34-5ea8-40fc-b27f-bbd1b9fab159",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "🔎 Спасибо! Оба документа получены. Анализирую — это займёт пару минут…",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "e3e7417e-ba47-43c0-948c-50a16a28f06f",
+      "name": "💬 Анализирую…",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "3b5d648e-cbff-45fe-b51e-5353726f042f",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT role, doc_text FROM nnn_tg_intake WHERE chat_id = '{{ $('Telegram Trigger').item.json.message.chat.id }}' ORDER BY created_at",
+        "options": {}
+      },
+      "id": "5552c305-aceb-4d38-8297-6c7ed4f9c4ff",
+      "name": "📚 Достать оба текста",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i=>i.json);\nlet contract='', recon='';\nfor (const r of rows){ if(r.role==='contract') contract=r.doc_text; else if(r.role==='reconciliation') recon=r.doc_text; }\nconst trig = $('Telegram Trigger').first().json;\nreturn [{ json: { contract_text: contract, reconciliation_text: recon, currency: 'USD', property_name: (trig.message.chat.first_name ? trig.message.chat.first_name+' — объект' : 'Объект') } }];"
+      },
+      "id": "cb4e0597-c5f1-4f12-b85e-373767ffec5f",
+      "name": "🧩 Собрать вход для движка",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        0
+      ],
+      "notes": "Готовим contract_text/reconciliation_text/currency для под-воркфлоу."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "gtC4g7rWyn4M81ER",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/gtC4g7rWyn4M81ER",
+          "cachedResultName": "NNN Analysis Engine (под-воркфлоу)"
+        },
+        "options": {}
+      },
+      "id": "96a7039f-fb98-4e53-b50a-ba305998203f",
+      "name": "🧠 Анализ (движок)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        656,
+        0
+      ],
+      "notes": "Вызывает под-воркфлоу NNN Analysis Engine. ПОСЛЕ ИМПОРТА выберите его в поле Workflow."
+    },
+    {
+      "parameters": {
+        "jsCode": "const e=$('🧠 Анализ (движок)').first().json;\nconst leadId=$('💾 Создать лид').first().json.id;\nconst chat=$('Telegram Trigger').first().json.message.chat;\nconst tasks=(e.tasks||[]).map((t,i)=>`${i+1}. [${t.priority}] ${t.title}\\n   ${t.what_to_do}${t.potential_overcharge?`\\n   💰 ${t.potential_overcharge}`:''}`).join('\\n\\n');\nconst text=`✅ Проверка NNN готова\\n\\n${e.summary||''}\\n\\n💰 Итого возможная переплата: ${e.total_potential_overcharge||'—'}\\n\\nЗадачи:\\n${tasks}\\n\\nХотите детальный аудит и помощь с претензией? Запишитесь ниже 👇`;\nconst base='https://cal.com/dauren-as-000-lfklrn/nnn-детальныи-аудит';\nconst booking_url=`${base}?metadata[lead_id]=${leadId}&name=${encodeURIComponent(chat.first_name||'')}`;\nreturn [{ json:{ tg_text:text, chat_id:String(chat.id), booking_url } }];"
+      },
+      "id": "2da8c97b-d299-4ddf-bf40-9329bcbd4cb7",
+      "name": "✍️ Сформировать ответ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "notes": "Текст ответа + ссылка записи с lead_id в metadata. Замените base ('https://cal.com/your-team/nnn-audit') на свой Cal.com."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.tg_text }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📅 Записаться на детальный аудит",
+                    "additionalFields": {
+                      "url": "={{ $json.booking_url }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f5726b1d-8524-4298-840b-1e734a655437",
+      "name": "📤 Отправить результат + кнопку",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1104,
+        0
+      ],
+      "webhookId": "f7c4ae8a-bf6d-4bf3-8baf-466c7e3e550a",
+      "credentials": {
+        "telegramApi": {
+          "id": "kC6uuayCMwRNd9Go",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Кнопка ведёт на вашу страницу записи Cal.com — замените URL."
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "nnn_leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source": "telegram",
+            "channel_id": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+            "full_name": "={{ $('Telegram Trigger').item.json.message.chat.first_name }}",
+            "property_name": "={{ $('🧠 Анализ (движок)').item.json.property_name }}",
+            "status": "analyzed"
+          }
+        },
+        "options": {}
+      },
+      "id": "5c09b9d0-5514-4b9c-bcd7-1de7a242c4ca",
+      "name": "💾 Создать лид",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1312,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Записываем лид в CRM (возвращает id)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO nnn_analyses (lead_id, total_overcharge, high_count, summary, dispute_letter, confidence, source_type, findings, tasks) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [ $('💾 Создать лид').item.json.id, $('🧠 Анализ (движок)').item.json.total_potential_overcharge, $('🧠 Анализ (движок)').item.json.high_count, $('🧠 Анализ (движок)').item.json.summary, $('🧠 Анализ (движок)').item.json.dispute_letter_text, $('🧠 Анализ (движок)').item.json.confidence, $('🧠 Анализ (движок)').item.json.source, JSON.stringify($('🧠 Анализ (движок)').item.json.findings || []), JSON.stringify($('🧠 Анализ (движок)').item.json.tasks || []) ] }}"
+        }
+      },
+      "id": "69163a13-5d02-4a98-ad6a-ffabe479fd30",
+      "name": "💾 Сохранить анализ",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1536,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM nnn_tg_intake WHERE chat_id = '{{ $('Telegram Trigger').item.json.message.chat.id }}'",
+        "options": {}
+      },
+      "id": "b27fb43a-1976-4f4a-a52c-86efff745bd8",
+      "name": "🧹 Очистить буфер",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1760,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "0iABnTzbUKMJjDRL",
+          "name": "Social Automation DB"
+        }
+      },
+      "notes": "Чистим буфер документов, чтобы следующая проверка началась с нуля."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "❓ Это документ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "❓ Это документ?": {
+      "main": [
+        [
+          {
+            "node": "⬇️ Скачать файл",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "💬 Приветствие",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⬇️ Скачать файл": {
+      "main": [
+        [
+          {
+            "node": "📄 Извлечь текст из PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 Извлечь текст из PDF": {
+      "main": [
+        [
+          {
+            "node": "🔢 Сколько уже файлов?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔢 Сколько уже файлов?": {
+      "main": [
+        [
+          {
+            "node": "🏷 Определить роль файла",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🏷 Определить роль файла": {
+      "main": [
+        [
+          {
+            "node": "💾 Сохранить документ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Сохранить документ": {
+      "main": [
+        [
+          {
+            "node": "❓ Оба документа собраны?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "❓ Оба документа собраны?": {
+      "main": [
+        [
+          {
+            "node": "💬 Анализирую…",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "💬 Жду второй файл",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Анализирую…": {
+      "main": [
+        [
+          {
+            "node": "📚 Достать оба текста",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📚 Достать оба текста": {
+      "main": [
+        [
+          {
+            "node": "🧩 Собрать вход для движка",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧩 Собрать вход для движка": {
+      "main": [
+        [
+          {
+            "node": "🧠 Анализ (движок)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 Анализ (движок)": {
+      "main": [
+        [
+          {
+            "node": "💾 Создать лид",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Создать лид": {
+      "main": [
+        [
+          {
+            "node": "💾 Сохранить анализ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Сохранить анализ": {
+      "main": [
+        [
+          {
+            "node": "✍️ Сформировать ответ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✍️ Сформировать ответ": {
+      "main": [
+        [
+          {
+            "node": "📤 Отправить результат + кнопку",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📤 Отправить результат + кнопку": {
+      "main": [
+        [
+          {
+            "node": "🧹 Очистить буфер",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "33284f93-e5fe-447a-834d-9d98a9a7903d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6576d0836e2330f8b97d875b06fa2116455e2e77c223e2b7f6c1cc7c39283f81"
+  },
+  "id": "omC8cZ5HORc2sMOG",
+  "tags": []
+}

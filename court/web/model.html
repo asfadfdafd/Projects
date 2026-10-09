@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как устроена модель — демо</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">AI-помощник по гражданским делам</span>
+  <span class="role">прозрачность модели</span>
+  <span class="spacer"></span>
+  <a href="/">← К выбору модуля</a>
+</div>
+
+<div class="wrap">
+  <h1>Как устроена модель и чего она не умеет</h1>
+  <p class="lead">
+    Страница для тех, кто оценивает систему по существу: на чём модель обучена,
+    насколько она точна, какие факторы влияют на оценку и где проходит граница
+    её применимости.
+  </p>
+
+  <div class="disclaimer">
+    <strong>Главное ограничение.</strong> Модель обучена на синтетическом
+    наборе данных, сгенерированном по явно заданной причинной модели.
+    Она демонстрирует работу пайплайна, но не отражает реальную судебную
+    практику. Любые числа на других страницах следует читать как
+    «так это будет выглядеть», а не «так решит суд».
+  </div>
+
+  <div id="content" class="spinner">Загружаем метрики…</div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+api("/api/model-info").then(function (m) {
+  let h = "";
+
+  h += '<h2>Что за модель</h2><div class="card"><table><tbody>' +
+    row("Тип модели", "Логистическая регрессия с L2-регуляризацией") +
+    row("Версия", m.model_version) +
+    row("Обучающая выборка", m.n_train + " дел (всего в наборе " +
+        (m.dataset.n_total || "—") + ")") +
+    row("Доля удовлетворённых исков в наборе",
+        Math.round((m.dataset.win_rate || 0) * 100) + " %") +
+    row("Извлечение признаков из документов", m.extractor) +
+    '</tbody></table>' +
+    '<p style="font-size:14px;margin-bottom:0">Логистическая регрессия выбрана ' +
+    'не потому, что она проще, а потому что вклад каждого признака в итоговую ' +
+    'вероятность вычисляется точно. Для судебной сферы проверяемость вывода ' +
+    'важнее долей процента точности — тем более что, как видно ниже, ' +
+    'градиентный бустинг заметного выигрыша не даёт.</p></div>';
+
+  h += '<h2>Качество на проверочной выборке</h2><div class="card"><table>' +
+    '<thead><tr><th>Модель</th><th>ROC-AUC</th><th>F1</th><th>Accuracy</th>' +
+    '<th>Brier</th><th>Log loss</th></tr></thead><tbody>' +
+    m.comparison.map(function (c) {
+      return '<tr><td>' + esc(c.model) + '</td><td class="num">' + c.roc_auc +
+        '</td><td class="num">' + c.f1 + '</td><td class="num">' + c.accuracy +
+        '</td><td class="num">' + c.brier_score + '</td><td class="num">' +
+        c.log_loss + '</td></tr>';
+    }).join("") + '</tbody></table>' +
+    '<p style="font-size:14px">ROC-AUC около 0,83 — реалистичный уровень для ' +
+    'задачи с большой долей неустранимой неопределённости. Значение, близкое ' +
+    'к 0,99, означало бы утечку целевой переменной в признаки, а не хорошую ' +
+    'модель. Brier score и калибровка важнее точности: пользователю ' +
+    'показывается вероятность, и она должна быть честной.</p></div>';
+
+  h += '<h2>Калибровка: совпадает ли прогноз с фактом</h2><div class="card">' +
+    '<p style="margin-top:0;font-size:14px">Если среди дел, которым модель дала ' +
+    '70 %, выигрывается примерно 70 % — вероятностям можно доверять.</p>' +
+    '<table><thead><tr><th>Прогноз модели</th><th>Дел</th>' +
+    '<th>Средний прогноз</th><th>Фактическая доля выигранных</th>' +
+    '<th>Расхождение</th></tr></thead><tbody>' +
+    m.calibration.map(function (b) {
+      const d = Math.abs(b.predicted - b.actual);
+      return '<tr><td>' + esc(b.bin) + '</td><td class="num">' + b.n +
+        '</td><td class="num">' + Math.round(b.predicted * 100) + ' %</td>' +
+        '<td class="num">' + Math.round(b.actual * 100) + ' %</td>' +
+        '<td class="num"><span class="pill ' + (d < 0.08 ? "yes" : "warn") + '">' +
+        Math.round(d * 100) + ' п.п.</span></td></tr>';
+    }).join("") + '</tbody></table>' +
+    '<p style="font-size:14px;margin-bottom:0">Средневзвешенное расхождение — ' +
+    esc(m.uncertainty_band_pp) + ' п.п. Именно эта величина показывается ' +
+    'пользователю как диапазон оценки: заявлять точность до процента ' +
+    'модель оснований не имеет.</p></div>';
+
+  if (m.share_model) {
+    const s = m.share_model;
+    const gain = Math.round(100 * (1 - s.mae / s.baseline_mae_if_always_mean));
+    h += '<h2>Вторая модель: какая доля требований будет удовлетворена</h2>' +
+      '<div class="card"><p style="margin-top:0;font-size:14px">Выиграть дело ' +
+      'и получить заявленную сумму — не одно и то же. Отдельная гребневая ' +
+      'регрессия обучена на выигранных делах и оценивает, какую часть ' +
+      'требований суд удовлетворит; ожидаемое взыскание считается как ' +
+      'произведение вероятности, этой доли и суммы иска.</p>' +
+      '<table><tbody>' +
+      row("Средняя ошибка (MAE)", s.mae) +
+      row("Если всегда предсказывать среднее", s.baseline_mae_if_always_mean) +
+      row("Выигрыш к простому среднему", gain + " %") +
+      row("Доля объяснённой изменчивости (R²)", s.r2) +
+      row("Дел в обучении", s.n_train_used) +
+      '</tbody></table>' +
+      '<p style="font-size:14px;margin-bottom:0">R² около ' + s.r2 + ' — скромно, ' +
+      'и это ожидаемо: размер присуждённого сильно зависит от обстоятельств, ' +
+      'которых нет в карточке дела. Модель полезна как ориентир, но её ошибка ' +
+      '(±' + Math.round(s.mae * 100) + ' п.п.) показывается пользователю рядом ' +
+      'с оценкой.</p></div>';
+  }
+
+  h += '<h2>Что сильнее всего влияет на оценку</h2><div class="card">' +
+    '<p style="margin-top:0;font-size:14px">Насколько падает качество модели, ' +
+    'если значения признака перемешать случайным образом.</p>';
+  const max = Math.max.apply(null, m.importance.map(function (i) { return i.auc_drop; }));
+  h += m.importance.slice(0, 12).map(function (i) {
+    const w = Math.max(2, Math.round(100 * i.auc_drop / max));
+    return '<div style="display:flex;align-items:center;gap:12px;padding:6px 0">' +
+      '<div style="flex:0 0 46%;font-size:14px">' + esc(i.label) + '</div>' +
+      '<div style="flex:1;background:var(--line-2);border-radius:3px;height:9px">' +
+      '<div style="width:' + w + '%;height:9px;background:var(--navy);border-radius:3px"></div></div>' +
+      '<div class="muted" style="flex:none;width:52px;text-align:right">' +
+      i.auc_drop.toFixed(3) + '</div></div>';
+  }).join("") + '</div>';
+
+  h += '<h2>Проверка: восстановила ли модель заложенную структуру</h2>' +
+    '<div class="card"><p style="margin-top:0;font-size:14px">Генератор ' +
+    'датасета знает «истинную» вероятность каждого дела — она не участвует ' +
+    'в обучении. Сравнение с ней показывает, выучила ли модель причинную ' +
+    'структуру или подогналась под шум.</p><table><tbody>' +
+    row("Корреляция прогноза с истинной вероятностью",
+        m.recovery_check.corr_pred_vs_true_probability) +
+    row("Среднее отклонение от истинной вероятности",
+        Math.round((m.recovery_check.mean_abs_error_vs_true_probability || 0) * 100) + " п.п.") +
+    '</tbody></table></div>';
+
+  h += '<h2>Границы применимости</h2><div class="card">' +
+    '<ul style="font-size:14px;margin:0;padding-left:20px">' +
+    '<li>Данные синтетические: веса признаков заданы разработчиком, а не ' +
+    'извлечены из практики. Перенос на реальные дела требует переобучения ' +
+    'на размеченном корпусе исходов.</li>' +
+    '<li>Модель оценивает вероятность удовлетворения требований в целом ' +
+    'и не различает полное и частичное удовлетворение.</li>' +
+    '<li>Извлечение признаков правиловое: оно устойчиво и работает офлайн, ' +
+    'но хуже языковой модели справляется с нетиповыми формулировками. ' +
+    'Поэтому пользователь может исправить любой распознанный признак ' +
+    'и увидеть пересчёт.</li>' +
+    '<li>Архитектура рассчитана на дообучение: фактические исходы дел ' +
+    'дописываются в набор, после чего повторный запуск обучения обновляет ' +
+    'модель и метрики. Процедура дообучения на реальных исходах в демо ' +
+    'намеренно не выполняется.</li></ul></div>';
+
+  el("content").innerHTML = h;
+  el("content").classList.remove("spinner");
+}).catch(function (e) { showError("content", e.message); });
+
+function row(k, v) {
+  return '<tr><td style="width:44%">' + esc(k) + '</td><td><b>' + esc(v) + '</b></td></tr>';
+}
+</script>
+</body>
+</html>

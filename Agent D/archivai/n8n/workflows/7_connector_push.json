@@ -1,0 +1,121 @@
+{
+  "id": "archivai-w7",
+  "name": "ArchivAI · 7 · Connector: Push (outbox → client)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 1 } ] }
+      },
+      "id": "schedule-push",
+      "name": "Schedule: Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "push-now",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-push-now",
+      "name": "Webhook: Push Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 400],
+      "webhookId": "archivai-push-now"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM outbox_take(10);",
+        "options": { "queryReplacement": null }
+      },
+      "id": "pg-outbox-take",
+      "name": "PG: Outbox Take",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "alwaysOutputData": true,
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"taken\": $input.all().map(i => i.json).filter(r => r && r.id).length } }}"
+      },
+      "id": "respond-push",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [660, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('PG: Outbox Take').all().map(i => i.json).filter(r => r && r.id).map(r => ({ json: { id: r.id, payload: r.payload } }));"
+      },
+      "id": "fan-push",
+      "name": "Fan Out Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CLIENT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payload }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-push",
+      "name": "HTTP: Push to Client",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT outbox_mark($1::uuid, true, NULL);",
+        "options": {
+          "queryReplacement": "={{ [ $('Fan Out Batch').item.json.id ] }}"
+        }
+      },
+      "id": "pg-mark-sent",
+      "name": "PG: Mark Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1320, 200],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT outbox_mark($1::uuid, false, $2);",
+        "options": {
+          "queryReplacement": "={{ [ $('Fan Out Batch').item.json.id, ($json.error && ($json.error.message || $json.error.description)) || 'push failed' ] }}"
+        }
+      },
+      "id": "pg-mark-failed",
+      "name": "PG: Mark Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1320, 420],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    }
+  ],
+  "connections": {
+    "Schedule: Every minute": { "main": [[{ "node": "PG: Outbox Take", "type": "main", "index": 0 }]] },
+    "Webhook: Push Now":      { "main": [[{ "node": "PG: Outbox Take", "type": "main", "index": 0 }]] },
+    "PG: Outbox Take":        { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
+    "Respond":                { "main": [[{ "node": "Fan Out Batch", "type": "main", "index": 0 }]] },
+    "Fan Out Batch":          { "main": [[{ "node": "HTTP: Push to Client", "type": "main", "index": 0 }]] },
+    "HTTP: Push to Client":   { "main": [[{ "node": "PG: Mark Sent", "type": "main", "index": 0 }], [{ "node": "PG: Mark Failed", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

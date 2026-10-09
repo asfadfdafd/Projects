@@ -1,0 +1,973 @@
+{
+  "name": "Instagram Retail Automation MVP host",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Stamp each comment with its parent post's permalink and id so we don't have to look it up later inside the loop.\nconst items = $input.all();\nconst posts = $('Split Posts').all();\nconst out = [];\nfor (let i = 0; i < items.length; i++) {\n  const post = posts[i] ? posts[i].json : {};\n  const comments = (items[i].json.data || []).map(c => ({\n    ...c,\n    post_permalink: post.permalink || '',\n    post_id: post.id || ''\n  }));\n  out.push({\n    json: { data: comments },\n    pairedItem: { item: i }\n  });\n}\nreturn out;"
+      },
+      "id": "caa3a1f1-df81-4f80-a658-933aa3417522",
+      "name": "Enrich Comments With Post Info1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3424,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f41d055d-9286-4598-b863-d53aaec00523",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2528,
+        1520
+      ],
+      "id": "d8a63485-8cd9-4fe9-942f-2a69cb222dd0",
+      "name": "If Not Yet Processed1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2080,
+        1520
+      ],
+      "id": "d9947493-9d69-4827-ae36-9ccf6a3aee59",
+      "name": "Call Groq AI1",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "e8BR8sB6heksHP8J",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.comment_id }}/replies",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "👋 Tapsyrys beru үşin Direct-ke jazıńız nemese WhatsApp-qa: https://wa.me/77712269016 — Менеджер жақында жауап береді! 🛍️"
+            },
+            {
+              "name": "access_token",
+              "value": "EAAVg7cQXP6ABRWMrnuFFUG0XxT0SAf65oYiNpZAZCXzENyVNeV6tcYUAGy97qZB0eA2o0iZA5HVzYwZCsiTTFct2lXOTQjLOVpT8yTahZBAny0vWju19lT4JqS7egbL2FZB5oqDv5zaHSNEbeVzkKCsQsjt28B1PzFpkCcW4MDpZCYWpMWZCvYq0f8ZBLG2EaxPlHhJ5Mnr9yC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -976,
+        1520
+      ],
+      "id": "e631c55a-84e5-4ec1-8264-16affb80dc20",
+      "name": "Reply Buy Intent1",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fires once when the loop finishes — emits a single summary item.\n// Wire this to Slack/Telegram/Email later if you want a heartbeat per run.\nconst all = $input.all();\nconst counts = all.reduce((a, it) => {\n  const c = it.json.category || 'UNKNOWN';\n  a[c] = (a[c] || 0) + 1;\n  return a;\n}, {});\nreturn [{\n  json: {\n    run_completed_at: new Date().toISOString(),\n    total: all.length,\n    by_category: counts\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2896,
+        1872
+      ],
+      "id": "bfb179d1-80f9-432e-bb3e-1d55f5a0642f",
+      "name": "Run Summary1"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "5205420e-be92-4706-ab53-5e1ca5eff765",
+      "name": "Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -4272,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v19.0/17841473238786112/media",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "id,caption,timestamp,permalink"
+            },
+            {
+              "name": "limit",
+              "value": "7"
+            },
+            {
+              "name": "access_token",
+              "value": "EAAVg7cQXP6ABRWMrnuFFUG0XxT0SAf65oYiNpZAZCXzENyVNeV6tcYUAGy97qZB0eA2o0iZA5HVzYwZCsiTTFct2lXOTQjLOVpT8yTahZBAny0vWju19lT4JqS7egbL2FZB5oqDv5zaHSNEbeVzkKCsQsjt28B1PzFpkCcW4MDpZCYWpMWZCvYq0f8ZBLG2EaxPlHhJ5Mnr9yC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "89adaaf1-1740-4846-9693-f5599ef37600",
+      "name": "Get Recent Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -4048,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "53472287-94ef-40fa-873c-532afca30f6c",
+      "name": "Split Posts",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -3824,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.id }}/comments",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "id,text,username,timestamp,like_count,from"
+            },
+            {
+              "name": "access_token",
+              "value": "EAAVg7cQXP6ABRWMrnuFFUG0XxT0SAf65oYiNpZAZCXzENyVNeV6tcYUAGy97qZB0eA2o0iZA5HVzYwZCsiTTFct2lXOTQjLOVpT8yTahZBAny0vWju19lT4JqS7egbL2FZB5oqDv5zaHSNEbeVzkKCsQsjt28B1PzFpkCcW4MDpZCYWpMWZCvYq0f8ZBLG2EaxPlHhJ5Mnr9yC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cd6b350c-0907-450d-b910-ef4cf606a550",
+      "name": "Get Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -3616,
+        1520
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "6513283f-aae7-4871-afc4-f977d48b3d36",
+      "name": "Split Comments",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -3232,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "filter-timestamp",
+              "leftValue": "={{ new Date($json.timestamp).getTime() }}",
+              "rightValue": "={{ new Date(Date.now() - 15 * 60 * 1000).getTime() }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d016e939-1cb6-4318-b4ed-3d678f8be090",
+      "name": "Filter New Comments",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        -2960,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const comment = $('Filter New Comments').item.json;\n\nconst prompt = `Analyze this Instagram comment for a retail store in Kazakhstan.\n\nComment: \"${(comment.text || '').replace(/\"/g, \"'\")}\"\n\nRules for each category:\n- POSITIVE: compliments, thanks, love, fire emoji, praise, \"классно\", \"жақсы\", \"өте керемет\", \"nice\", \"😍🔥❤️\", \"прикол\", \"прикольно\", \"отлично\", \"круто\" — NOT simple greetings\n- NEGATIVE: complaints, criticism, \"не интересно\", \"скучно\", \"дорого\", \"плохо\", \"не нравится\", \"жаман\", \"қымбат\", dismissive comments, \"ужас\", \"ужасно\", \"ужаааас\", \"кошмар\", \"отстой\", \"фу\", \"плохо\", any elongated version of negative words\n- NEUTRAL: short unclear messages, \"ок\", \"окей\", single neutral emojis, greetings with no intent like \"привет\", \"хай\", \"салем\"\n- BUY_INTENT: asking price, \"сколько стоит\", \"қанша тұрады\", \"где купить\", \"как заказать\", \"есть в наличии\", \"жеткізу бар ма\", delivery questions, order questions, \"хочу купить\", \"алғым келеді\"\n\n\nReturn ONLY this JSON, no extra text:\n{\n  \"category\": \"POSITIVE\" or \"NEGATIVE\" or \"BUY_INTENT\" or \"NEUTRAL\",\n  \"confidence\": 0.90,\n  \"suggestedReply\": \"short reply in Russian or Kazakh matching the category\",\n  \"reason\": \"one short sentence explaining why\"\n}`;\n\nreturn {\n  comment_id: comment.id,\n  comment_text: comment.text,\n  username: comment.username,\n  timestamp: comment.timestamp,\n  user_ig_id: comment.from?.id || '',\n  post_permalink: comment.post_permalink || '',\n  post_id: comment.post_id || '',\n  body: JSON.stringify({\n    model: \"llama-3.1-8b-instant\",\n    temperature: 0.2,\n    messages: [\n      {\n        role: \"system\",\n        content: \"You are a helpful assistant for a retail store in Kazakhstan. Return ONLY valid JSON, no markdown, no extra text.\"\n      },\n      {\n        role: \"user\",\n        content: prompt\n      }\n    ]\n  })\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2304,
+        1520
+      ],
+      "id": "46bd3ab4-c2f5-4bcf-91f6-5d15f937e992",
+      "name": "Build Groq Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawContent = $input.item.json?.choices?.[0]?.message?.content || '';\nconst comment = $('Build Groq Request').item.json;\n\nlet parsed;\ntry {\n  const cleaned = rawContent\n    .replace(/```json/gi, '')\n    .replace(/```/gi, '')\n    .trim();\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  parsed = {\n    category: 'NEUTRAL',\n    confidence: 0.5,\n    suggestedReply: 'Rahmet! 😊',\n    reason: 'Could not parse AI response'\n  };\n}\n\nconst validCategories = ['POSITIVE', 'NEGATIVE', 'BUY_INTENT', 'NEUTRAL'];\nconst category = validCategories.includes(parsed.category)\n  ? parsed.category\n  : 'NEUTRAL';\n\nreturn {\n  comment_id: comment.comment_id,\n  comment_text: comment.comment_text,\n  username: comment.username,\n  timestamp: comment.timestamp,\n  user_ig_id: comment.user_ig_id || '',\n  post_permalink: comment.post_permalink || '',\n  post_id: comment.post_id || '',\n  category: category,\n  confidence: Number(parsed.confidence) || 0.5,\n  suggestedReply: parsed.suggestedReply || 'Rahmet! 😊',\n  reason: parsed.reason || ''\n};"
+      },
+      "id": "4fc922ba-caff-42a5-9f39-13608a45dfb7",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        1536
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "POSITIVE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "POSITIVE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "BUY_INTENT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "BUY_INTENT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "NEGATIVE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEGATIVE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "NEUTRAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEUTRAL"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6b1605f4-f240-4aa7-92ec-612379469e22",
+      "name": "Route by Category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -1168,
+        1472
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $json.comment_id }}/replies",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "Rahmet! 😊 Pikiriñizge riz'abiz! 🙏"
+            },
+            {
+              "name": "access_token",
+              "value": "EAAVg7cQXP6ABRWMrnuFFUG0XxT0SAf65oYiNpZAZCXzENyVNeV6tcYUAGy97qZB0eA2o0iZA5HVzYwZCsiTTFct2lXOTQjLOVpT8yTahZBAny0vWju19lT4JqS7egbL2FZB5oqDv5zaHSNEbeVzkKCsQsjt28B1PzFpkCcW4MDpZCYWpMWZCvYq0f8ZBLG2EaxPlHhJ5Mnr9yC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4df3ab14-99f1-49f1-941b-50bcef05a2a0",
+      "name": "Reply Positive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -976,
+        1312
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $('Pass Through1').item.json.comment_id }}/replies",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "Здравствуйте! Приносим извинения за неудобства. В ближайшее время свяжемся в дайрект 🙏"
+            },
+            {
+              "name": "access_token",
+              "value": "EAAVg7cQXP6ABRWMrnuFFUG0XxT0SAf65oYiNpZAZCXzENyVNeV6tcYUAGy97qZB0eA2o0iZA5HVzYwZCsiTTFct2lXOTQjLOVpT8yTahZBAny0vWju19lT4JqS7egbL2FZB5oqDv5zaHSNEbeVzkKCsQsjt28B1PzFpkCcW4MDpZCYWpMWZCvYq0f8ZBLG2EaxPlHhJ5Mnr9yC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7173b990-f43a-48dc-a1b4-6cd707cd41c1",
+      "name": "Reply Negative2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -736,
+        1888
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -3088,
+        1792
+      ],
+      "id": "0aa40ca1-cfd7-487b-a479-a90ca991cac2",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id FROM comments\nWHERE platform_id = 1\nAND external_id = '{{ $json.id }}'\nLIMIT 1;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2752,
+        1520
+      ],
+      "id": "715627fe-be70-446b-88be-604435f644b5",
+      "name": "Already Processed?",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO tickets (comment_id, platform_id, username, issue_summary, original_comment, priority)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $json.comment_id }}' AND platform_id = 1),\n  1,\n  $u${{ $json.username }}$u$,\n  $r${{ $json.reason }}$r$,\n  $c${{ $json.comment_text }}$c$,\n  'normal'\n)\nON CONFLICT (comment_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -976,
+        1696
+      ],
+      "id": "730edafd-167e-452c-af00-7b5143a4d141",
+      "name": "Create Ticket",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO responses (comment_id, text, channel, status, posted_at)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $('Pass Through1').item.json.comment_id }}' AND platform_id = 1),\n  $t${{ $('Pass Through1').item.json.suggestedReply }}$t$,\n  'instagram_comment',\n  'sent',\n  NOW()\n)\nON CONFLICT (comment_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -768,
+        1312
+      ],
+      "id": "232bbd92-52cc-425a-a345-75689bfd3b5e",
+      "name": "Execute a SQL query2",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (comment_id, platform_id, username, contact_info, status)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $('Pass Through1').item.json.comment_id }}' AND platform_id = 1),\n  1,\n  $u${{ $('Pass Through1').item.json.username }}$u$,\n  $u${{ $('Pass Through1').item.json.username }}$u$,\n  'new'\n)\nON CONFLICT (comment_id) DO NOTHING;\n\n-- Also log the response\nINSERT INTO responses (comment_id, text, channel, status, posted_at)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $('Pass Through1').item.json.comment_id }}' AND platform_id = 1),\n  $t${{ $('Pass Through1').item.json.suggestedReply }}$t$,\n  'instagram_comment',\n  'sent',\n  NOW()\n)\nON CONFLICT (comment_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -768,
+        1520
+      ],
+      "id": "fd43b171-29c8-4e9d-bfa8-62a04983d799",
+      "name": "Execute a SQL query3",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO responses (comment_id, text, channel, status, posted_at)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $('Pass Through1\"').item.json.comment_id }}' AND platform_id = 1),\n  $t${{ $('Pass Through1\"').item.json.suggestedReply }}$t$,\n  'instagram_comment',\n  'sent',\n  NOW()\n)\nON CONFLICT (comment_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -560,
+        1888
+      ],
+      "id": "7319be12-a430-4d7c-bcd4-55cb84cad4ba",
+      "name": "Reply Negative3",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO comments (platform_id, external_id, post_id, username, text, platform_timestamp)\nVALUES (1, $1, $2, $3, $4, $5)\nON CONFLICT (platform_id, external_id) DO NOTHING\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ $('Filter New Comments').item.json.id }} {{ $('Filter New Comments').item.json.post_id }} {{ $('Filter New Comments').item.json.username }} {{ $('Filter New Comments').item.json.text }} {{ $('Filter New Comments').item.json.timestamp }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1760,
+        1520
+      ],
+      "id": "fafc1c8a-27a4-42d6-b773-880fb2e44bd1",
+      "name": "Log All Activity",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('Parse AI Response').item.json;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1616,
+        1520
+      ],
+      "id": "24828809-14b7-41d9-9367-6ce1d524c7c2",
+      "name": "Pass Through1"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO analyses (comment_id, category, confidence, suggested_reply, reason)\nVALUES (\n  (SELECT id FROM comments WHERE external_id = '{{ $json.comment_id }}' AND platform_id = 1),\n  '{{ $json.category }}',\n  {{ $json.confidence }},\n  $reply${{ $json.suggestedReply }}$reply$,\n  $reason${{ $json.reason }}$reason$\n)\nON CONFLICT DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1456,
+        1520
+      ],
+      "id": "b5a78cd0-16c4-4ecc-9a47-c6f6d4759863",
+      "name": "Save Analysis1",
+      "credentials": {
+        "postgres": {
+          "id": "u1Hzmo89ZEzvUH9u",
+          "name": "Social Automation DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('Parse AI Response').item.json;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1312,
+        1520
+      ],
+      "id": "0b757379-edaa-4f58-a02d-a8daf8c98ed4",
+      "name": "Code in JavaScript1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Enrich Comments With Post Info1": {
+      "main": [
+        [
+          {
+            "node": "Split Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Not Yet Processed1": {
+      "main": [
+        [
+          {
+            "node": "Log All Activity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Call Groq AI1": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Buy Intent1": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 10 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Recent Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Recent Posts": {
+      "main": [
+        [
+          {
+            "node": "Split Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Posts": {
+      "main": [
+        [
+          {
+            "node": "Get Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Comments": {
+      "main": [
+        [
+          {
+            "node": "Enrich Comments With Post Info1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Comments": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Comments": {
+      "main": [
+        [
+          {
+            "node": "Already Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Groq Request": {
+      "main": [
+        [
+          {
+            "node": "Call Groq AI1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Pass Through1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Category": {
+      "main": [
+        [
+          {
+            "node": "Reply Positive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Buy Intent1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Positive": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Negative2": {
+      "main": [
+        [
+          {
+            "node": "Reply Negative3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Run Summary1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Filter New Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Processed?": {
+      "main": [
+        [
+          {
+            "node": "If Not Yet Processed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Ticket": {
+      "main": [
+        [
+          {
+            "node": "Reply Negative2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query3": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Negative3": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log All Activity": {
+      "main": [
+        [
+          {
+            "node": "Build Groq Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pass Through1": {
+      "main": [
+        [
+          {
+            "node": "Save Analysis1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Analysis1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Route by Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "9ab74847-70ad-4a83-9ac2-4b68ea4c5f48",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "3b27b8e79b96cdf00860f41eec2f82ee588cd04ae9ff70175bb1e1cf9f39e152"
+  },
+  "id": "bnYYRydMZGovfMg2",
+  "tags": [
+    {
+      "updatedAt": "2026-05-06T23:58:20.492Z",
+      "createdAt": "2026-05-06T23:58:20.492Z",
+      "id": "hTvENcWJSRDrwTFe",
+      "name": "Instagram Retail"
+    }
+  ]
+}

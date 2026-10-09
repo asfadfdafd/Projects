@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Оценка шансов по делу — демо</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">AI-помощник по гражданским делам</span>
+  <span class="role">Модуль 1 · для гражданина</span>
+  <span class="spacer"></span>
+  <a href="/">← К выбору модуля</a>
+</div>
+
+<div class="wrap narrow">
+  <h1>Оценка шансов по делу</h1>
+  <p class="lead">
+    Загрузите документы, связанные с вашим спором: исковое заявление, договор,
+    акты, чеки, переписку. Система разберёт их и покажет ориентировочную оценку
+    вероятности того, что требования будут удовлетворены.
+  </p>
+
+  <div class="disclaimer">
+    <strong>Это не юридическая консультация.</strong> Оценка рассчитана на
+    демонстрационных данных и носит ориентировочный характер. Она не является
+    прогнозом решения суда и не заменяет консультацию юриста.
+  </div>
+
+  <div id="input-block">
+    <div class="card">
+      <h3>Ваши документы</h3>
+      <div class="drop" id="drop">
+        <b>Перетащите файлы сюда</b> или нажмите, чтобы выбрать<br>
+        <span class="muted">Текстовые файлы, Word (.docx), .rtf и .pdf. Обрабатываются на вашем компьютере, на диск не сохраняются.</span>
+      </div>
+      <input type="file" id="file-input" multiple accept=".txt,.md,.docx,.rtf,.pdf,.doc,.png,.jpg,.jpeg" style="display:none">
+      <ul class="filelist" id="filelist"></ul>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button id="assess" disabled>Оценить шансы</button>
+        <button class="ghost" id="clear">Очистить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Или посмотрите на готовом примере</h3>
+      <p class="muted" style="margin-top:-4px">
+        Все лица, организации и обстоятельства вымышлены.
+      </p>
+      <div class="demo-cases" id="demo-cases"></div>
+    </div>
+  </div>
+
+  <div id="loading" class="spinner hidden">Разбираем документы…</div>
+  <div id="result" class="hidden"></div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+const files = [];
+let lastFeatures = null;
+
+const zone = setupDropzone("drop", "file-input", "filelist", files, function () {
+  el("assess").disabled = files.length === 0;
+});
+
+el("clear").addEventListener("click", function () {
+  zone.clear();
+  el("result").classList.add("hidden");
+  el("input-block").classList.remove("hidden");
+});
+
+el("assess").addEventListener("click", function () {
+  run({ documents: files });
+});
+
+renderDemoCases("demo-cases", function (id) { run({ demo_case_id: id }); });
+
+function run(payload) {
+  el("loading").classList.remove("hidden");
+  el("result").classList.add("hidden");
+  api("/api/citizen/assess", payload)
+    .then(function (data) {
+      lastFeatures = data.features;
+      render(data);
+    })
+    .catch(function (e) { showError("result", e.message); })
+    .finally(function () { el("loading").classList.add("hidden"); });
+}
+
+function money(value) {
+  return Number(value || 0).toLocaleString("ru-RU") + " тг";
+}
+
+function moneyCell(label, value, note, accent) {
+  return '<div' + (accent ? ' class="accent"' : '') + '>' +
+    '<div class="lbl">' + esc(label) + '</div>' +
+    '<div class="val">' + esc(value) + '</div>' +
+    (note ? '<div class="nt">' + esc(note) + '</div>' : '') + '</div>';
+}
+
+function factorRow(f) {
+  return '<div class="factor ' + (f.direction === "positive" ? "pos" : "neg") + '">' +
+    '<div class="bar"></div><div class="body"><div>' + esc(f.text) + '</div>' +
+    '<div class="eff">' + esc(f.effect_text) + '</div></div>' +
+    (Math.abs(f.effect_pp) >= 0.1
+      ? '<div class="amt">' + (f.effect_pp > 0 ? "+" : "") + f.effect_pp + '</div>'
+      : '') + '</div>';
+}
+
+function render(data) {
+  const a = data.assessment, ex = data.extraction;
+  let h = "";
+
+  h += '<div class="card"><div class="verdict">' + gauge(a.probability_pct) +
+    '<div class="verdict-text">' +
+    '<div class="band">Шансы на удовлетворение требований: ' + esc(a.band_label) + '</div>' +
+    '<div class="range">Правдоподобный диапазон оценки — ' + a.range_pct[0] + '–' +
+    a.range_pct[1] + ' %. Ширина диапазона отражает точность модели на ' +
+    'проверочных данных, а не только это конкретное дело.</div>' +
+    '<div class="muted" style="margin-top:10px">Дело: ' + esc(data.title) + '</div>' +
+    '</div></div></div>';
+
+  if (a.critical_issues && a.critical_issues.length) {
+    h += a.critical_issues.map(function (c) {
+      return '<div class="critical"><b>Требует внимания в первую очередь</b>' +
+        esc(c.action) + '</div>';
+    }).join("");
+  }
+
+  /* --- сколько реально можно получить ----------------------------------- */
+  const e = a.expected_award;
+  if (e) {
+    h += '<div class="card"><h3>Сколько можно получить по итогу</h3>' +
+      '<p class="muted" style="margin-top:-4px">Выиграть дело и получить всю ' +
+      'заявленную сумму — не одно и то же: суд удовлетворяет требования ' +
+      'в той части, размер которой подтверждён документами.</p>' +
+      '<div class="money">' +
+      moneyCell("Заявлено в иске", money(e.claim_amount), "") +
+      moneyCell("Если требования удовлетворят", money(e.award_if_won),
+                "около " + e.expected_share_pct + " % от заявленного") +
+      moneyCell("С учётом вероятности исхода", money(e.expected_award),
+                "ориентир для планирования", true) +
+      '</div></div>';
+  }
+
+  /* --- похожие дела ------------------------------------------------------ */
+  const sim = data.similar;
+  if (sim && sim.n) {
+    h += '<div class="card"><h3>Похожие дела в базе</h3>' +
+      '<p style="margin-top:-4px;font-size:14px">Из <b>' + sim.n +
+      '</b> дел, близких к вашему по обстоятельствам, требования удовлетворены ' +
+      'в <b>' + sim.won + '</b> случаях (' + Math.round(sim.win_rate * 100) +
+      ' %). Это независимая проверка оценки выше: она получена моделью, ' +
+      'а эта доля — простым подсчётом.</p>';
+    h += sim.examples.map(function (x) {
+      return '<div class="factor"><div class="bar" style="background:' +
+        (x.won ? 'var(--green)' : 'var(--red)') + '"></div><div class="body">' +
+        '<div>' + esc(x.category) + ' · ' + esc(x.amount) +
+        (x.notes.length ? ' · ' + esc(x.notes.join(", ")) : '') + '</div>' +
+        '<div class="eff">' + esc(x.outcome) + '</div></div></div>';
+    }).join("");
+    h += '<p class="muted" style="margin-bottom:0">' + esc(sim.note) + '</p></div>';
+  }
+
+  h += '<div class="two-col">';
+  h += '<div class="card"><h3>Что работает на вас</h3>' +
+    (a.positive_factors.length
+      ? a.positive_factors.map(factorRow).join("")
+      : '<p class="muted">Обстоятельств, усиливающих позицию, в документах не найдено.</p>') +
+    '</div>';
+  h += '<div class="card"><h3>Что ослабляет позицию</h3>' +
+    (a.negative_factors.length
+      ? a.negative_factors.map(factorRow).join("")
+      : '<p class="muted">Существенных слабых мест не обнаружено.</p>') +
+    '</div></div>';
+
+  h += '<div class="card"><h3>Что усилило бы позицию</h3>';
+  if (a.recommendations.length) {
+    h += '<p class="muted" style="margin-top:-4px">Рядом с каждым пунктом — ' +
+      'насколько изменилась бы оценка, если бы это появилось в деле.</p>';
+    h += a.recommendations.map(function (r) {
+      return '<div class="rec"><span class="gain">+' + r.gain_pp + ' п.п.</span>' +
+        '<div>' + esc(r.action) + '</div></div>';
+    }).join("");
+  } else {
+    h += '<p class="muted">Пакет документов выглядит полным: ' +
+      'существенных пробелов, которые модель могла бы отметить, нет.</p>';
+  }
+  h += '</div>';
+
+  /* --- что система нашла в документах: с возможностью исправить --------- */
+  h += '<div class="card"><h3>Что система нашла в ваших документах</h3>' +
+    '<p class="muted" style="margin-top:-4px">Автоматический разбор может ' +
+    'ошибаться. Проверьте и при необходимости исправьте — оценка пересчитается.</p>' +
+    '<table><thead><tr><th>Обстоятельство</th><th>Найдено</th>' +
+    '<th>На основании чего</th></tr></thead><tbody>';
+
+  const BIN = {
+    has_written_contract: "Письменный договор",
+    contract_signed_both: "Договор подписан обеими сторонами",
+    has_payment_documents: "Платёжные документы",
+    has_acceptance_act: "Акты приёма-передачи, накладные",
+    has_correspondence: "Переписка сторон",
+    has_expert_opinion: "Заключение эксперта или оценка",
+    pretrial_claim_sent: "Досудебная претензия направлена",
+    limitation_period_ok: "Срок исковой давности соблюдён"
+  };
+  const signals = {};
+  (ex.signals || []).forEach(function (s) { signals[s.feature] = s; });
+
+  Object.keys(BIN).forEach(function (k) {
+    const v = data.features[k], s = signals[k] || {};
+    h += '<tr><td>' + esc(BIN[k]) + '</td>' +
+      '<td><label style="cursor:pointer;display:flex;gap:7px;align-items:center">' +
+      '<input type="checkbox" data-feature="' + k + '"' + (v ? " checked" : "") + '>' +
+      '<span class="pill ' + (v ? "yes" : "no") + '">' + (v ? "да" : "нет") + '</span></label></td>' +
+      '<td class="muted">' + esc(s.rule || "—") +
+      (s.snippet ? '<div class="quote">' + esc(s.snippet) + '</div>' : "") +
+      '</td></tr>';
+  });
+  h += '<tr><td>Сумма требований</td><td class="num">' +
+    Number(data.features.claim_amount_kzt).toLocaleString("ru-RU") + ' тг</td>' +
+    '<td class="muted">' + esc((signals.claim_amount_kzt || {}).rule || "—") + '</td></tr>';
+  h += '<tr><td>Свидетели</td><td class="num">' + data.features.witness_count +
+    '</td><td class="muted">' + esc((signals.witness_count || {}).rule || "—") + '</td></tr>';
+  h += '</tbody></table>' +
+    '<div style="margin-top:14px"><button class="small" id="recalc">Пересчитать оценку</button></div>';
+
+  if (ex.warnings && ex.warnings.length) {
+    h += '<div style="margin-top:14px" class="privacy">При разборе документов: ' +
+      ex.warnings.map(esc).join(" ") + '</div>';
+  }
+  h += '</div>';
+
+  h += '<details class="tech card tight"><summary>Как получена эта оценка</summary>' +
+    '<p style="font-size:14px;margin-top:0">Оценку даёт логистическая регрессия, ' +
+    'обученная на синтетическом демонстрационном наборе дел. ' +
+    'Вклад каждого обстоятельства рассчитан точно, а не приближённо: ' +
+    'числа рядом с факторами показывают, насколько изменилась бы вероятность ' +
+    'без этого обстоятельства.</p>' +
+    '<p style="font-size:14px">Качество модели на проверочной выборке: ' +
+    'ROC-AUC ' + esc(a.model_quality.roc_auc) + ', F1 ' + esc(a.model_quality.f1) +
+    ', Brier ' + esc(a.model_quality.brier_score) + '. ' +
+    '<a href="/model.html">Подробнее о модели и её ограничениях</a></p></details>';
+
+  h += '<div class="disclaimer">' + esc(a.disclaimer) + '</div>';
+  h += '<div style="margin-top:8px"><button class="ghost" id="restart">' +
+    'Оценить другое дело</button></div>';
+
+  el("result").innerHTML = h;
+  el("result").classList.remove("hidden");
+  el("input-block").classList.add("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+
+  el("restart").addEventListener("click", function () {
+    el("result").classList.add("hidden");
+    el("input-block").classList.remove("hidden");
+  });
+
+  el("recalc").addEventListener("click", function () {
+    const f = Object.assign({}, lastFeatures);
+    Array.prototype.forEach.call(
+      el("result").querySelectorAll("input[type=checkbox][data-feature]"),
+      function (cb) { f[cb.dataset.feature] = cb.checked ? 1 : 0; });
+    // полнота пакета документов пересчитывается вслед за правками
+    const parts = ["has_written_contract", "contract_signed_both",
+      "has_payment_documents", "has_acceptance_act", "has_correspondence",
+      "has_expert_opinion", "pretrial_claim_sent"];
+    f.doc_completeness = parts.reduce(function (s, k) { return s + (f[k] ? 1 : 0); }, 0) / parts.length;
+    el("loading").classList.remove("hidden");
+    api("/api/citizen/recalculate", { features: f })
+      .then(function (d) {
+        render({ title: data.title, features: d.features,
+                 assessment: d.assessment, extraction: ex, similar: d.similar });
+        lastFeatures = d.features;
+      })
+      .catch(function (e) { showError("result", e.message); })
+      .finally(function () { el("loading").classList.add("hidden"); });
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,338 @@
+{
+  "name": "NNN Analysis Engine (под-воркфлоу)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "0de5b272-2c82-4e10-9b61-438505a23c25",
+      "name": "▶️ Вход: тексты документов",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "Принимает contract_text, reconciliation_text, currency, property_name. Возвращает анализ."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ПРОХОД 1: извлекаем структурированные числа из договора и сверки.\nconst d=$json;\nconst system=`Ты извлекаешь структурированные данные из документов коммерческой аренды NNN. Возвращай ТОЛЬКО валидный JSON по схеме, без markdown. Проценты — числом (напр. 4.2). Денежные суммы — числом без разделителей. Нет значения — null.`;\nconst user=`Извлеки данные, ЧЁТКО различая ДОГОВОР и СВЕРКУ.\\n\\nИЗ ДОГОВОРА (contract): pro_rata_share_pct — доля арендатора, ЗАФИКСИРОВАННАЯ В ДОГОВОРЕ (НЕ бери из сверки!); controllable_cap_pct — лимит годового роста контролируемых расходов; management_fee_cap_pct — лимит комиссии за управление; excluded_expenses — статьи, которые договор ЗАПРЕЩАЕТ включать; reconciliation_due_days; dispute_period_days — срок на оспаривание; base_year.\\nИЗ СВЕРКИ (reconciliation): line_items — ВСЕ статьи с суммами; stated_total — заявленный итог; applied_share_pct — доля, ФАКТИЧЕСКИ применённая в сверке; tenant_share_amount; estimates_credited; prior_year_controllable; current_year_controllable; management_fee_applied_pct — процент комиссии в сверке; management_fee_amount; payment_deadline_days — за сколько дней требуют оплату.\\n\\nСХЕМА: {\\\"contract\\\":{\\\"pro_rata_share_pct\\\":null,\\\"controllable_cap_pct\\\":null,\\\"management_fee_cap_pct\\\":null,\\\"excluded_expenses\\\":[],\\\"reconciliation_due_days\\\":null,\\\"dispute_period_days\\\":null,\\\"base_year\\\":null},\\\"reconciliation\\\":{\\\"line_items\\\":[{\\\"name\\\":\\\"\\\",\\\"amount\\\":0}],\\\"stated_total\\\":null,\\\"applied_share_pct\\\":null,\\\"tenant_share_amount\\\":null,\\\"estimates_credited\\\":null,\\\"balance_due\\\":null,\\\"prior_year_controllable\\\":null,\\\"current_year_controllable\\\":null,\\\"management_fee_applied_pct\\\":null,\\\"management_fee_amount\\\":null,\\\"payment_deadline_days\\\":null}}\\n\\n=== ДОГОВОР ===\\n${d.contract_text}\\n\\n=== СВЕРКА ===\\n${d.reconciliation_text}`;\nreturn [{ json:{ email:d.email, property_name:d.property_name, currency:d.currency, source:d.source, contract_text:d.contract_text, reconciliation_text:d.reconciliation_text, body: JSON.stringify({ model:'llama-3.3-70b-versatile', temperature:0, response_format:{type:'json_object'}, messages:[{role:'system',content:system},{role:'user',content:user}] }) }}];"
+      },
+      "id": "97539ec4-7822-4b6b-b942-eb616fd84fac",
+      "name": "🧠 Запрос: извлечь данные",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "notes": "Проход 1: вытаскиваем чистые числа (доля, лимиты, статьи, итоги, сроки)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "0da64bb8-6c46-49ad-a37b-bd9cd75f2a38",
+      "name": "🤖 Call Groq AI (извлечение)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "J1eRU7UjeN3Iryr0",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Проход 1: извлечение данных через тот же Groq API."
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta=$('🧠 Запрос: извлечь данные').first().json;\nlet raw=$json.choices?.[0]?.message?.content||'';\nraw=String(raw).replace(/```json/gi,'').replace(/```/gi,'').trim();\nlet ex; try{ ex=JSON.parse(raw);}catch(e){ ex={}; }\nreturn [{ json:{ email:meta.email, property_name:meta.property_name, currency:meta.currency, source:meta.source, contract_text:meta.contract_text, reconciliation_text:meta.reconciliation_text, extracted:ex } }];"
+      },
+      "id": "26a5aea3-97f7-4166-9667-c1d0e9d74569",
+      "name": "📦 Разобрать данные",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "notes": "Парсим извлечённые числа и передаём в расчётный узел."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ТОЧНЫЙ РАСЧЁТ нарушений по извлечённым числам (без ИИ).\nconst d=$json; const ex=d.extracted||{}; const C=ex.contract||{}; const R=ex.reconciliation||{}; const cur=d.currency||'USD';\nconst num=v=>typeof v==='number'&&!isNaN(v)?v:(typeof v==='string'&&v.trim()!==''&&!isNaN(+v)?+v:null);\nconst cs=num(C.pro_rata_share_pct), applied=num(R.applied_share_pct), total=num(R.stated_total);\nconst money=n=>Math.round(n).toLocaleString('ru-RU')+' '+cur; const fmt=n=>'≈ '+money(n);\nconst findings=[]; let totalOver=0; const addAmt=a=>{ if(typeof a==='number'&&!isNaN(a)) totalOver+=a; };\n// 1) Доля\nif(cs!=null&&applied!=null&&total!=null&&Math.abs(applied-cs)>0.001){ const a=total*(applied-cs)/100; addAmt(a); findings.push({priority:'Высокий',amount:fmt(a),issue:`Применена доля ${applied}% вместо ${cs}% по договору`,detail:`Расходы распределены по доле ${applied}%, а договор фиксирует ${cs}%. Переплата = ${money(total)} × (${applied}%−${cs}%) = ${fmt(a)}.`}); }\n// 2) Запрещённые расходы\nconst kw=[/roof|крыш/i,/parking|парков/i,/capital|капит/i,/deprecia|износ|амортиз/i,/interest|процент/i,/leasing|procure|attract|привлеч|лизинг/i,/income tax|налог на приб/i];\nconst items=Array.isArray(R.line_items)?R.line_items:[]; let exclSum=0; const exclNames=[];\nfor(const it of items){ const nm=it.name||''; const am=num(it.amount); if(am!=null&&kw.some(re=>re.test(nm))){ exclSum+=am; exclNames.push(`${nm} (${money(am)})`);} }\nif(exclSum>0&&cs!=null){ const a=exclSum*cs/100; addAmt(a); findings.push({priority:'Высокий',amount:fmt(a),issue:`В расходы включены запрещённые договором статьи: ${exclNames.join(', ')}`,detail:`Договор исключает эти статьи. Ваша доля = ${money(exclSum)} × ${cs}% = ${fmt(a)}.`}); }\n// 3) Cap\nconst cap=num(C.controllable_cap_pct), prior=num(R.prior_year_controllable), curr=num(R.current_year_controllable);\nif(cap!=null&&prior!=null&&curr!=null&&prior>0){ const g=(curr-prior)/prior*100; if(g>cap+0.001){ const excess=curr-prior*(1+cap/100); const a=cs!=null?excess*cs/100:null; if(a!=null)addAmt(a); findings.push({priority:'Средний',amount:a!=null?fmt(a):'',issue:`Контролируемые расходы выросли на ${g.toFixed(1)}% при лимите ${cap}%`,detail:`Рост с ${money(prior)} до ${money(curr)} превышает лимит ${cap}%/год. Сверхлимит ≈ ${money(excess)}${a!=null?`, ваша доля ${fmt(a)}`:''}.`}); } }\n// 4) Management fee\nconst feeCap=num(C.management_fee_cap_pct), feePct=num(R.management_fee_applied_pct), feeAmt=num(R.management_fee_amount);\nif(feeCap!=null&&feePct!=null&&feeAmt!=null&&feePct>feeCap+0.001){ const exFee=feeAmt*(feePct-feeCap)/feePct; const a=cs!=null?exFee*cs/100:null; if(a!=null)addAmt(a); findings.push({priority:'Средний',amount:a!=null?fmt(a):'',issue:`Комиссия за управление ${feePct}% превышает лимит ${feeCap}%`,detail:`Сверхлимитная часть комиссии ≈ ${money(exFee)}${a!=null?`, ваша доля ${fmt(a)}`:''}.`}); }\n// 9) Срок\nconst pay=num(R.payment_deadline_days), disp=num(C.dispute_period_days);\nif(pay!=null&&disp!=null&&pay<disp){ findings.push({priority:'Средний',amount:'',issue:`Требуют оплату за ${pay} дн., хотя у вас ${disp} дн. на проверку и оспаривание`,detail:`Срок оплаты короче вашего права на оспаривание — платить до окончания проверки не обязательно.`}); }\n// 8) Арифметика\nconst sumItems=items.reduce((s,it)=>s+(num(it.amount)||0),0);\nif(total!=null&&sumItems>0&&Math.abs(sumItems-total)>1){ findings.push({priority:'Низкий',amount:'',issue:`Сумма статей (${money(sumItems)}) не сходится с заявленным итогом (${money(total)})`,detail:`Стоит перепроверить итог расходов.`}); }\nreturn [{ json:{ email:d.email, property_name:d.property_name, currency:cur, source:d.source, contract_text:d.contract_text, reconciliation_text:d.reconciliation_text, computed_findings:findings, computed_total: totalOver>0?fmt(totalOver):'требует уточнения' } }];"
+      },
+      "id": "98d63618-f45b-441d-85a7-ac17fbe96c33",
+      "name": "🧮 Рассчитать нарушения (точно)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "notes": "Суммы считаются здесь детерминированно. ИИ дальше только формулирует текст."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ПРОХОД 2: ИИ ТОЛЬКО ФОРМУЛИРУЕТ текст по уже посчитанным числам (не считает сам).\nconst d = $json;\nconst cf = JSON.stringify(d.computed_findings||[]);\nconst system = `Ты — помощник по NNN-аренде. Пишешь простым, дружелюбным языком для обычного арендатора; термины поясняй в скобках. НИКОГДА не упоминай технические названия полей. НЕ пересчитывай суммы — бери их ровно как в данных. Возвращай ТОЛЬКО валидный JSON, без markdown.`;\nconst user = `Вот ТОЧНО ПОСЧИТАННЫЕ нарушения (JSON, поле amount — готовая сумма переплаты, detail — пояснение):\\n${cf}\\n\\nИтоговая переплата уже посчитана: '${d.computed_total}'.\\n\\nЗАДАЧА: для каждого нарушения сделай (1) находку понятным языком на основе issue/detail и (2) задачу — конкретное действие арендатора (что попросить/потребовать у арендодателя). priority бери из нарушения, potential_overcharge — из его amount. Добавь summary из 2-3 предложений простым языком. Если нарушений нет (пустой массив) — summary, что серьёзных расхождений не выявлено, и одна задача: сверить оригиналы и сохранить документы; total — 'нарушений не выявлено'.\\n\\nВ ответе поставь total_potential_overcharge = '${d.computed_total}' и confidence 0.9.\\n\\nВЕРНИ СТРОГО JSON: {\\\"property_name\\\":\\\"${d.property_name}\\\",\\\"confidence\\\":0.9,\\\"summary\\\":\\\"\\\",\\\"total_potential_overcharge\\\":\\\"${d.computed_total}\\\",\\\"findings\\\":[{\\\"issue\\\":\\\"\\\",\\\"evidence_contract\\\":\\\"\\\",\\\"evidence_reconciliation\\\":\\\"\\\",\\\"potential_overcharge\\\":\\\"\\\"}],\\\"tasks\\\":[{\\\"title\\\":\\\"\\\",\\\"what_to_do\\\":\\\"\\\",\\\"priority\\\":\\\"Высокий|Средний|Низкий\\\",\\\"potential_overcharge\\\":\\\"\\\"}]}`;\nreturn [{ json:{ email:d.email, property_name:d.property_name, currency:d.currency, source:d.source, computed_total:d.computed_total, body: JSON.stringify({ model:'llama-3.3-70b-versatile', temperature:0.2, response_format:{type:'json_object'}, messages:[{role:'system',content:system},{role:'user',content:user}] }) }}];"
+      },
+      "id": "f2777a91-7b47-4e39-bb4e-4296818d29f8",
+      "name": "🧠 Собрать запрос к Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        0
+      ],
+      "notes": "Единая точка для текстовой и OCR-веток. Модель llama-3.3-70b-versatile, валюта, confidence."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "dbd508b6-57eb-4211-a747-df6d99f6b11d",
+      "name": "🤖 Call Groq AI (анализ)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1328,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "J1eRU7UjeN3Iryr0",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Тот же Groq API/креденшл. Ретраи + таймаут."
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('🧠 Собрать запрос к Groq').first().json;\nlet raw = $json.choices?.[0]?.message?.content || $json.message?.content || '';\nraw = String(raw).replace(/```json/gi,'').replace(/```/gi,'').trim();\nlet data; try { data = JSON.parse(raw); } catch(e){ data = { parse_error:true, confidence:0, summary:'Не удалось автоматически разобрать ответ — перепроверим вручную.', findings:[], tasks:[{title:'Требуется ручная проверка', what_to_do:'Специалист посмотрит документы и вернётся с результатом.', priority:'Высокий', potential_overcharge:''}] }; }\nconst order={'Высокий':0,'Средний':1,'Низкий':2};\n(data.tasks||[]).sort((a,b)=>(order[a.priority]??3)-(order[b.priority]??3));\nconst high=(data.tasks||[]).filter(t=>t.priority==='Высокий').length;\nreturn [{ json:{ ...data, total_potential_overcharge: meta.computed_total || data.total_potential_overcharge, email:meta.email, currency:meta.currency, source:meta.source, property_name:data.property_name||meta.property_name, high_count:high, has_high:high>0, has_findings:(data.findings||[]).length>0, generated_at:new Date().toLocaleString('ru-RU') } }];"
+      },
+      "id": "d3c5182d-be6c-464e-83c8-067c2a0f13b8",
+      "name": "📦 Распарсить ответ ИИ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        0
+      ],
+      "notes": "JSON-парсинг с фолбэком, сортировка задач, флаги has_high / has_findings."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Запрос на генерацию письма-претензии арендодателю на основе находок.\nconst d = $json;\nconst findings = JSON.stringify(d.findings||[]);\nconst system = `Ты юрист-помощник. Составь вежливое, но твёрдое официальное письмо-претензию от арендатора к арендодателю об оспаривании завышенных NNN-расходов. Деловой тон, на русском. Ссылайся на конкретные расхождения. Не выдумывай факты — только из переданных находок. Суммы — в валюте ${d.currency}. ВАЖНО: пиши обычным деловым языком, НИКОГДА не упоминай технические названия полей/переменных (pro_rata_share_pct, line_items, contract.* и т.п.) — только понятные формулировки с числами и процентами. Верни ТОЛЬКО текст письма, без пояснений и markdown.`;\nconst user = `Объект: ${d.property_name}. Возможная переплата: ${d.total_potential_overcharge||'требует уточнения'}. Находки (JSON): ${findings}. \\nСтруктура письма: шапка (кому/от кого — оставь плейсхолдеры [Арендодатель], [Арендатор], [Дата]), суть, перечень спорных позиций со ссылкой на пункты договора, требование пересчитать и вернуть переплату/предоставить подтверждающие документы, срок ответа 30 дней, вежливое завершение.`;\nreturn [{ json:{ ...d, body: JSON.stringify({ model:'llama-3.3-70b-versatile', temperature:0.3, messages:[{role:'system',content:system},{role:'user',content:user}] }) }}];"
+      },
+      "id": "58e1cfd3-c524-4714-b0cc-ab6b0efb0886",
+      "name": "🧠 Запрос: письмо-претензия",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ],
+      "notes": "Второй вызов Groq — генерация черновика письма-претензии из находок."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "af05b7e8-54cc-4400-9dbf-d74a1fe31130",
+      "name": "🤖 Call Groq AI (письмо)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1984,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "J1eRU7UjeN3Iryr0",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Тот же Groq API. Генерирует текст письма-претензии."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Берём текст письма и кладём его и как вложение (.txt), и в данные для письма клиенту.\nconst d = $('📦 Распарсить ответ ИИ').first().json;\nlet letter = $json.choices?.[0]?.message?.content || '';\nletter = String(letter).replace(/```/g,'').trim();\nif (!letter) letter = 'Не удалось сгенерировать письмо автоматически.';\nreturn [{ json:{ ...d, dispute_letter_text: letter }, binary:{ dispute_letter:{ data: Buffer.from(letter,'utf8').toString('base64'), mimeType:'text/plain', fileName:'Pretenziya_arendodatelyu.txt' } } }];"
+      },
+      "id": "bda79bbf-0ee1-4f0a-bacd-cbe4a8be8c0e",
+      "name": "📦 Подготовить письмо-претензию",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        0
+      ],
+      "notes": "Текст письма становится вложением .txt и секцией в письме клиенту."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "▶️ Вход: тексты документов": {
+      "main": [
+        [
+          {
+            "node": "🧠 Запрос: извлечь данные",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 Запрос: извлечь данные": {
+      "main": [
+        [
+          {
+            "node": "🤖 Call Groq AI (извлечение)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Call Groq AI (извлечение)": {
+      "main": [
+        [
+          {
+            "node": "📦 Разобрать данные",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 Разобрать данные": {
+      "main": [
+        [
+          {
+            "node": "🧮 Рассчитать нарушения (точно)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧮 Рассчитать нарушения (точно)": {
+      "main": [
+        [
+          {
+            "node": "🧠 Собрать запрос к Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 Собрать запрос к Groq": {
+      "main": [
+        [
+          {
+            "node": "🤖 Call Groq AI (анализ)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Call Groq AI (анализ)": {
+      "main": [
+        [
+          {
+            "node": "📦 Распарсить ответ ИИ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 Распарсить ответ ИИ": {
+      "main": [
+        [
+          {
+            "node": "🧠 Запрос: письмо-претензия",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 Запрос: письмо-претензия": {
+      "main": [
+        [
+          {
+            "node": "🤖 Call Groq AI (письмо)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Call Groq AI (письмо)": {
+      "main": [
+        [
+          {
+            "node": "📦 Подготовить письмо-претензию",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b7cee62d-5647-42f2-9806-c2ef3c23fcbe",
+  "meta": {
+    "instanceId": "6576d0836e2330f8b97d875b06fa2116455e2e77c223e2b7f6c1cc7c39283f81"
+  },
+  "id": "gtC4g7rWyn4M81ER",
+  "tags": []
+}

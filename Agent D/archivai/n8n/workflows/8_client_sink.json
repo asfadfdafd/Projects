@@ -1,0 +1,51 @@
+{
+  "id": "archivai-w8",
+  "name": "ArchivAI · 8 · Client Sink (demo legacy system)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "client-sink",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-sink",
+      "name": "Webhook: Client Sink",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "archivai-client-sink"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT log_client_push($1::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.body || {}) ] }}"
+        }
+      },
+      "id": "pg-sink-log",
+      "name": "PG: Log Received Push",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [440, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}"
+      },
+      "id": "respond-sink",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [660, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Client Sink":  { "main": [[{ "node": "PG: Log Received Push", "type": "main", "index": 0 }]] },
+    "PG: Log Received Push": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,0 +1,150 @@
+{
+  "id": "archivai-w6",
+  "name": "ArchivAI · 6 · Connector: Pull (bulk ingest)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 5 } ] }
+      },
+      "id": "schedule-pull",
+      "name": "Schedule: Every 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "connector-pull",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-pull",
+      "name": "Webhook: Pull Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 400],
+      "webhookId": "archivai-connector-pull"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "getAll",
+        "bucketName": "={{ $env.CONNECTOR_BUCKET || 'import' }}",
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "s3-list",
+      "name": "S3: List Source Files",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [440, 300],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "credentials": { "s3": { "id": "archivai-s3", "name": "ArchivAI MinIO" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const bucket = $env.CONNECTOR_BUCKET || 'import';\nconst base = ($env.MINIO_ENDPOINT || 'http://minio:9000').replace(/\\/+$/, '');\nconst files = $input.all().map(i => i.json).filter(f => f && f.Key)\n  .map(f => ({ key: f.Key, url: base + '/' + bucket + '/' + f.Key, size: f.Size || null }));\nreturn [{ json: { files } }];"
+      },
+      "id": "collect-files",
+      "name": "Collect Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT connector_filter_new($1::jsonb) AS new_files;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.files || []) ] }}"
+        }
+      },
+      "id": "pg-filter-new",
+      "name": "PG: Filter New",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [880, 300],
+      "credentials": { "postgres": { "id": "archivai-pg", "name": "ArchivAI Postgres" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"found\": ($('Collect Files').first().json.files || []).length, \"dispatched\": ($('PG: Filter New').first().json.new_files || []).length } }}"
+      },
+      "id": "respond-pull",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const nf = $('PG: Filter New').first().json.new_files || [];\nreturn nf.map(f => ({ json: { filename: (f.key || '').split('/').pop() || f.key, original_url: f.url, pages: [ { image_url: f.url } ] } }));"
+      },
+      "id": "fan-ingest",
+      "name": "Fan Out New Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.WEB_INTERNAL_URL || 'http://web:3000').replace(/\\/+$/, '') + '/api/pdf/expand' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"filename\": $json.filename, \"original_url\": $json.original_url, \"pages\": $json.pages } }}",
+        "options": { "timeout": 600000 }
+      },
+      "id": "web-expand-pdf",
+      "name": "Web: Expand PDFs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 300],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "PDFs in the source bucket are rendered to one image per page (the web app owns object-storage writes). Non-PDF files pass straight through, so this runs for every file."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pair each expand response with the file it came from. If the web app is not\n// running (it lives behind the compose \"full\" profile) keep the original entry:\n// the AI service then splits the PDF itself during /process — page images just\n// don't get their own URLs.\nconst src = $('Fan Out New Files').all();\nconst res = $input.all();\nreturn src.map((item, i) => {\n  const base = item.json;\n  const r = (res[i] && res[i].json) || {};\n  const pages = Array.isArray(r.pages) && r.pages.length ? r.pages : base.pages;\n  return { json: { filename: base.filename, original_url: base.original_url, pages } };\n});"
+      },
+      "id": "merge-expanded",
+      "name": "Merge Expanded Pages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5678/webhook/ingest",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"filename\": $json.filename, \"original_url\": $json.original_url, \"pages\": $json.pages } }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-ingest-new",
+      "name": "HTTP: Ingest File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 300],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Schedule: Every 5 min": { "main": [[{ "node": "S3: List Source Files", "type": "main", "index": 0 }]] },
+    "Webhook: Pull Now":     { "main": [[{ "node": "S3: List Source Files", "type": "main", "index": 0 }]] },
+    "S3: List Source Files": { "main": [[{ "node": "Collect Files", "type": "main", "index": 0 }]] },
+    "Collect Files":         { "main": [[{ "node": "PG: Filter New", "type": "main", "index": 0 }]] },
+    "PG: Filter New":        { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
+    "Respond":               { "main": [[{ "node": "Fan Out New Files", "type": "main", "index": 0 }]] },
+    "Fan Out New Files":     { "main": [[{ "node": "Web: Expand PDFs", "type": "main", "index": 0 }]] },
+    "Web: Expand PDFs":      { "main": [[{ "node": "Merge Expanded Pages", "type": "main", "index": 0 }]] },
+    "Merge Expanded Pages":  { "main": [[{ "node": "HTTP: Ingest File", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

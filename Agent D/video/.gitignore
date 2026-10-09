@@ -1,0 +1,5 @@
+node_modules/
+out/
+preview/.work/
+.DS_Store
+*.log
